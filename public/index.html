@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="AI-powered Salesforce Apex test generation and auto-fix harness powered by Claude LLM">
+  <title>Apex Test Harness — AI-Powered Test Generation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- ─── Header ──────────────────────────────────────── -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">⚡</span>
+          <h1>Apex Test Harness</h1>
+        </div>
+        <span class="badge">AI-Powered</span>
+      </div>
+      <div class="header-right">
+        <!-- SF CLI Org Selector -->
+        <div id="cli-connect-container" class="cli-connect-container">
+          <select id="cli-org-select" class="cli-org-select">
+            <option value="">Detecting CLI orgs...</option>
+          </select>
+          <button id="btn-cli-connect" class="btn btn-accent" onclick="connectViaCli()">
+            ⚡ Connect Org
+          </button>
+        </div>
+
+        <div id="auth-status" class="auth-status disconnected">
+          <span class="status-dot"></span>
+          <span class="status-text">Disconnected</span>
+        </div>
+        <button id="btn-auth" class="btn btn-secondary" onclick="handleAuth()">
+          OAuth Login
+        </button>
+      </div>
+    </header>
+
+    <!-- ─── Main Content ────────────────────────────────── -->
+    <main class="main-content">
+
+      <!-- Left Panel: Class Selector + Preview -->
+      <section class="panel panel-left">
+        <div class="panel-header">
+          <h2>📂 Apex Classes</h2>
+          <div class="search-box" id="search-container" style="display:none;">
+            <input type="text" id="class-search" placeholder="Search classes..." oninput="filterClasses()">
+          </div>
+        </div>
+
+        <div id="class-list-container" class="class-list-container">
+          <div class="empty-state" id="class-list-empty">
+            <div class="empty-icon">🔌</div>
+            <p>Connect to Salesforce to load Apex classes</p>
+          </div>
+          <ul id="class-list" class="class-list" style="display:none;"></ul>
+        </div>
+
+        <!-- Code Preview -->
+        <div id="code-preview-section" class="code-preview-section" style="display:none;">
+          <div class="panel-header">
+            <h2>📄 <span id="preview-class-name">Class Preview</span></h2>
+            <button id="btn-generate" class="btn btn-accent" onclick="runHarness()" disabled>
+              🧠 Generate Test
+            </button>
+          </div>
+          <div class="code-container">
+            <pre id="code-preview" class="code-block"><code>Select a class to preview...</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Panel: Live Activity + Results -->
+      <section class="panel panel-right">
+
+        <!-- Live Activity Panel -->
+        <div id="progress-section" class="progress-section" style="display:none;">
+          <div class="panel-header">
+            <h2>🔄 Live Pipeline Activity</h2>
+            <div class="timer-group">
+              <span id="progress-phase" class="phase-badge">Initializing</span>
+              <span id="progress-timer" class="timer">0:00</span>
+            </div>
+          </div>
+          <div id="progress-steps" class="progress-steps"></div>
+        </div>
+
+        <!-- Results Panel -->
+        <div id="results-section" class="results-section" style="display:none;">
+          <div class="panel-header">
+            <h2 id="results-title">📊 Test Results</h2>
+          </div>
+
+          <!-- Summary Cards -->
+          <div id="results-summary" class="results-summary"></div>
+
+          <!-- Test Method Results -->
+          <div id="test-results" class="test-results"></div>
+
+          <!-- Generated Test Code -->
+          <div id="generated-code-section" class="generated-code-section" style="display:none;">
+            <div class="panel-header collapsible" onclick="toggleSection('generated-code-wrap')">
+              <h2>💻 Generated Test Class</h2>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <button class="btn btn-small" onclick="event.stopPropagation();copyTestCode()">📋 Copy</button>
+                <span class="chevron">▼</span>
+              </div>
+            </div>
+            <div id="generated-code-wrap" class="collapsible-content">
+              <pre id="generated-code" class="code-block"><code></code></pre>
+            </div>
+          </div>
+
+          <!-- Dependency Report -->
+          <div id="dependency-section" class="dependency-section" style="display:none;">
+            <div class="panel-header collapsible" onclick="toggleSection('dependency-details')">
+              <h2>🔍 Dependency Report</h2>
+              <span class="chevron">▼</span>
+            </div>
+            <div id="dependency-details" class="collapsible-content" style="display:none;"></div>
+          </div>
+        </div>
+
+        <!-- Default Empty State -->
+        <div id="right-empty" class="empty-state">
+          <div class="empty-icon">🧪</div>
+          <p>Select a class and generate tests to see real-time pipeline activity here</p>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

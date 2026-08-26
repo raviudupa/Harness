@@ -476,7 +476,13 @@ function buildFixDetail(data) {
 function buildGenerateDetail(data) {
   var parts = [];
   if (data.testClassName) parts.push('Class: <span class="mono">' + escapeHtml(data.testClassName) + '</span>');
-  if (data.tokensUsed) parts.push('Tokens: ' + data.tokensUsed.input + ' in / ' + data.tokensUsed.output + ' out');
+  if (data.tokensUsed) parts.push('Tokens: <strong>' + data.tokensUsed.input.toLocaleString() + '</strong> in / <strong>' + data.tokensUsed.output.toLocaleString() + '</strong> out');
+  if (data.charsUsed && (data.charsUsed.input || data.charsUsed.output)) {
+    parts.push('Chars: <strong>' + (data.charsUsed.input || 0).toLocaleString() + '</strong> in / <strong>' + (data.charsUsed.output || 0).toLocaleString() + '</strong> out');
+  }
+  if (data.estimatedCost && data.estimatedCost.totalCost > 0) {
+    parts.push('Cost: <strong>$' + data.estimatedCost.totalCost.toFixed(4) + '</strong>');
+  }
   return parts.length > 0 ? '<div class="detail-section">' + parts.join(' &nbsp;•&nbsp; ') + '</div>' : '';
 }
 
@@ -582,6 +588,9 @@ function renderResults(result) {
     </div>
   `;
 
+  // ─── Usage & Cost Summary ─────────────────────────────
+  renderUsageSummary(result);
+
   // Individual test results
   const testResults = document.getElementById('test-results');
   if (result.testResults && result.testResults.length > 0) {
@@ -652,4 +661,83 @@ function showToast(message, type = 'info') {
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
+}
+
+// ─── Usage & Cost Summary Renderer ──────────────────────
+function renderUsageSummary(result) {
+  // Remove existing usage section if re-rendering
+  const existing = document.getElementById('usage-summary-section');
+  if (existing) existing.remove();
+
+  const tokens = result.totalTokensUsed || {};
+  const chars = result.totalCharsUsed || {};
+  const cost = result.estimatedCost || {};
+  const modelName = cost.model || 'Unknown';
+
+  const totalTokens = (tokens.input || 0) + (tokens.output || 0);
+  const totalChars = (chars.input || 0) + (chars.output || 0);
+  const totalCost = cost.totalCost || 0;
+
+  // Don't render if there's no usage data at all
+  if (totalTokens === 0 && totalChars === 0) return;
+
+  const usageSection = document.createElement('div');
+  usageSection.id = 'usage-summary-section';
+  usageSection.className = 'usage-summary-section';
+
+  usageSection.innerHTML = `
+    <div class="usage-header">
+      <h3>💰 API Usage & Cost</h3>
+      <span class="usage-model-badge">${escapeHtml(modelName)}</span>
+    </div>
+    <div class="usage-grid">
+      <div class="usage-card usage-card-tokens">
+        <div class="usage-card-icon">🔤</div>
+        <div class="usage-card-content">
+          <div class="usage-card-value">${totalTokens.toLocaleString()}</div>
+          <div class="usage-card-label">Total Tokens</div>
+          <div class="usage-card-breakdown">
+            <span class="usage-in">↗ ${(tokens.input || 0).toLocaleString()} in</span>
+            <span class="usage-out">↙ ${(tokens.output || 0).toLocaleString()} out</span>
+          </div>
+        </div>
+      </div>
+      <div class="usage-card usage-card-chars">
+        <div class="usage-card-icon">📝</div>
+        <div class="usage-card-content">
+          <div class="usage-card-value">${totalChars.toLocaleString()}</div>
+          <div class="usage-card-label">Total Characters</div>
+          <div class="usage-card-breakdown">
+            <span class="usage-in">↗ ${(chars.input || 0).toLocaleString()} in</span>
+            <span class="usage-out">↙ ${(chars.output || 0).toLocaleString()} out</span>
+          </div>
+        </div>
+      </div>
+      <div class="usage-card usage-card-cost">
+        <div class="usage-card-icon">💵</div>
+        <div class="usage-card-content">
+          <div class="usage-card-value">${formatCost(totalCost)}</div>
+          <div class="usage-card-label">Estimated Cost</div>
+          <div class="usage-card-breakdown">
+            <span class="usage-in">↗ $${(cost.inputCost || 0).toFixed(4)} in</span>
+            <span class="usage-out">↙ $${(cost.outputCost || 0).toFixed(4)} out</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="usage-footer">
+      <span>Pricing based on <strong>${escapeHtml(modelName)}</strong> rates • ${result.attempts || 1} API call(s)</span>
+    </div>
+  `;
+
+  // Insert after the results-summary div
+  const summaryEl = document.getElementById('results-summary');
+  summaryEl.parentNode.insertBefore(usageSection, summaryEl.nextSibling);
+}
+
+function formatCost(dollars) {
+  if (dollars === 0) return '$0.00';
+  if (dollars < 0.01) return '$' + dollars.toFixed(4);
+  if (dollars < 1) return '$' + dollars.toFixed(3);
+  return '$' + dollars.toFixed(2);
 }

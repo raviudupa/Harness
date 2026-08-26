@@ -72,13 +72,43 @@ async function handleCallback(code, codeVerifier) {
 }
 
 /**
- * Get an authenticated jsforce connection from session data.
- * @param {object} session - Express session containing SF tokens
- * @returns {jsforce.Connection|null}
+ * For CLI-based connections, re-fetch a fresh access token from the Salesforce CLI.
+ * This is needed because CLI connections don't store a refresh token, so jsforce
+ * cannot auto-refresh expired tokens. The CLI manages its own token lifecycle.
+ * @param {object} session - Express session object
+ * @returns {Promise<void>}
  */
-function getConnection(session) {
+async function refreshCliToken(session) {
+  if (!session || !session.sf || !session.sf.cliTargetOrg) {
+    return; // Not a CLI-based connection, nothing to do
+  }
+
+  try {
+    const sfCliService = require('./sfCliService');
+    const authData = await sfCliService.getCliOrgAuth(session.sf.cliTargetOrg);
+    session.sf.accessToken = authData.accessToken;
+    session.sf.instanceUrl = authData.instanceUrl;
+    console.log('[SF] CLI access token refreshed for:', session.sf.cliTargetOrg);
+  } catch (err) {
+    console.error('[SF] Failed to refresh CLI token:', err.message);
+    throw new Error('CLI token refresh failed. Please reconnect via Salesforce CLI.');
+  }
+}
+
+/**
+ * Get an authenticated jsforce connection from session data.
+ * For CLI-based connections, automatically re-fetches a fresh token first.
+ * @param {object} session - Express session containing SF tokens
+ * @returns {Promise<jsforce.Connection|null>}
+ */
+async function getConnection(session) {
   if (!session || !session.sf) {
     return null;
+  }
+
+  // For CLI connections, always refresh the token before creating a connection
+  if (session.sf.cliTargetOrg) {
+    await refreshCliToken(session);
   }
 
   const { accessToken, refreshToken, instanceUrl } = session.sf;
@@ -102,6 +132,11 @@ function storeTokensInSession(session, tokenInfo) {
     userId: tokenInfo.userId,
     orgId: tokenInfo.orgId,
   };
+
+  // Preserve CLI target org identifier if present
+  if (tokenInfo.cliTargetOrg) {
+    session.sf.cliTargetOrg = tokenInfo.cliTargetOrg;
+  }
 }
 
 /**
@@ -128,6 +163,7 @@ module.exports = {
   getAuthorizationUrl,
   handleCallback,
   getConnection,
+  refreshCliToken,
   storeTokensInSession,
   clearSession,
   isAuthenticated,

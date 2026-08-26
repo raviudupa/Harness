@@ -346,14 +346,30 @@ Return ONLY the raw fixed Apex code.`;
     testClassBody += '\n}';
   }
 
-  console.log(`[ClaudeService] Received test class (${testClassBody.length} chars, stop_reason: ${response.stop_reason})`);
+  const inputTokens = response.usage?.input_tokens || 0;
+  const outputTokens = response.usage?.output_tokens || 0;
+  const cacheCreationTokens = response.usage?.cache_creation_input_tokens || 0;
+  const cacheReadTokens = response.usage?.cache_read_input_tokens || 0;
+
+  // Character counts: input prompt length + output body length
+  const inputChars = userMessage.length + buildSystemPrompt().length;
+  const outputChars = testClassBody.length;
+
+  console.log(`[ClaudeService] Received test class (${testClassBody.length} chars, stop_reason: ${response.stop_reason}, tokens: ${inputTokens}in/${outputTokens}out)`);
 
   return {
     testClassName,
     testClassBody,
+    model: CLAUDE_MODEL,
     tokensUsed: {
-      input: response.usage?.input_tokens || 0,
-      output: response.usage?.output_tokens || 0,
+      input: inputTokens,
+      output: outputTokens,
+      cacheCreation: cacheCreationTokens,
+      cacheRead: cacheReadTokens,
+    },
+    charsUsed: {
+      input: inputChars,
+      output: outputChars,
     },
   };
 }

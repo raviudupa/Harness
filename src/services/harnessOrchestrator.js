@@ -26,6 +26,50 @@ const MIN_FIX_RETRIES = 3;
 const MAX_FIX_RETRIES = parseInt(process.env.MAX_FIX_RETRIES || '3', 10);
 const MIN_COVERAGE_PERCENT = parseInt(process.env.MIN_COVERAGE_PERCENT || '80', 10);
 
+// ─── Claude Pricing (per 1M tokens) ──────────────────────
+// Pricing table: model prefix → { input, output } in USD per 1M tokens
+const MODEL_PRICING = {
+  'claude-opus-5':             { input: 15.00, output: 75.00 },
+  'claude-opus-4':             { input: 15.00, output: 75.00 },
+  'claude-sonnet-4':           { input: 4.00,  output: 20.00 },
+  'claude-3-7-sonnet':         { input: 3.00,  output: 15.00 },
+  'claude-3-5-sonnet':         { input: 3.00,  output: 15.00 },
+  'claude-3-5-haiku':          { input: 0.80,  output: 4.00 },
+  'claude-3-opus':             { input: 15.00, output: 75.00 },
+  'claude-3-sonnet':           { input: 3.00,  output: 15.00 },
+  'claude-3-haiku':            { input: 0.25,  output: 1.25 },
+};
+
+/**
+ * Calculate estimated cost in USD from token usage.
+ * @param {{ input: number, output: number }} tokens
+ * @param {string} model - The model identifier
+ * @returns {{ inputCost: number, outputCost: number, totalCost: number, model: string }}
+ */
+function calculateCost(tokens, model) {
+  // Find the best matching pricing entry
+  let pricing = null;
+  const modelLower = (model || '').toLowerCase();
+  for (const [prefix, rates] of Object.entries(MODEL_PRICING)) {
+    if (modelLower.includes(prefix) || modelLower.startsWith(prefix)) {
+      pricing = rates;
+      break;
+    }
+  }
+  // Fallback: use sonnet pricing as default
+  if (!pricing) pricing = { input: 3.00, output: 15.00 };
+
+  const inputCost = (tokens.input / 1_000_000) * pricing.input;
+  const outputCost = (tokens.output / 1_000_000) * pricing.output;
+  return {
+    inputCost: Math.round(inputCost * 1_000_000) / 1_000_000,
+    outputCost: Math.round(outputCost * 1_000_000) / 1_000_000,
+    totalCost: Math.round((inputCost + outputCost) * 1_000_000) / 1_000_000,
+    model: model || 'unknown',
+    pricingUsed: pricing,
+  };
+}
+
 /**
  * Execute the full harness pipeline for a given Apex class.
  *
@@ -107,6 +151,8 @@ async function executeHarness(conn, className, onProgress = () => {}) {
     let finalTestClassBody = null;
     let finalTestClassName = null;
     let totalTokensUsed = { input: 0, output: 0 };
+    let totalCharsUsed = { input: 0, output: 0 };
+    let usedModel = null;
 
     // Error history — accumulates ALL errors across ALL attempts
     const errorHistory = [];
@@ -132,10 +178,19 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       finalTestClassBody = generated.testClassBody;
       totalTokensUsed.input += generated.tokensUsed.input;
       totalTokensUsed.output += generated.tokensUsed.output;
+      if (generated.charsUsed) {
+        totalCharsUsed.input += generated.charsUsed.input;
+        totalCharsUsed.output += generated.charsUsed.output;
+      }
+      if (generated.model) usedModel = generated.model;
+
+      const stepCost = calculateCost(generated.tokensUsed, usedModel);
 
       progress('generate', `${label}: Test class generated (${finalTestClassBody.length} chars)`, {
         testClassName: finalTestClassName,
         tokensUsed: generated.tokensUsed,
+        charsUsed: generated.charsUsed || {},
+        estimatedCost: stepCost,
       });
 
       // ── Deploy ────────────────────────────────────────
@@ -232,6 +287,8 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           targetMet,
         });
 
+        const totalCost = calculateCost(totalTokensUsed, usedModel);
+
         return {
           success: true,
           className,
@@ -245,6 +302,8 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           dependencyReport,
           attempts: attempt + 1,
           totalTokensUsed,
+          totalCharsUsed,
+          estimatedCost: totalCost,
           duration: Date.now() - startTime,
           log,
         };
@@ -281,6 +340,8 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       lastResults: lastResult?.results || [],
     });
 
+    const totalCost = calculateCost(totalTokensUsed, usedModel);
+
     return {
       success: false,
       className,
@@ -291,6 +352,8 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       dependencyReport,
       attempts: MAX_FIX_RETRIES + 1,
       totalTokensUsed,
+      totalCharsUsed,
+      estimatedCost: totalCost,
       duration: Date.now() - startTime,
       log,
     };

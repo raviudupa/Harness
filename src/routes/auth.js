@@ -97,6 +97,7 @@ router.post('/cli/connect', async (req, res) => {
       instanceUrl: authData.instanceUrl,
       userId: authData.username,
       orgId: authData.orgId,
+      cliTargetOrg: targetOrg || authData.username, // Track CLI org for token refresh
     });
     res.json({ success: true, orgInfo: authData });
   } catch (err) {

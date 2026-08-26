@@ -26,20 +26,39 @@ setInterval(() => {
 /**
  * Middleware: require Salesforce authentication.
  */
+// function requireAuth(req, res, next) {
+//   if (!salesforceAuth.isAuthenticated(req.session)) {
+//     return res.status(401).json({ error: 'Not authenticated. Please login to Salesforce first.' });
+//   }
+//   next();
+// }
 function requireAuth(req, res, next) {
-  if (!salesforceAuth.isAuthenticated(req.session)) {
-    return res.status(401).json({ error: 'Not authenticated. Please login to Salesforce first.' });
-  }
-  next();
-}
+  const configuredKey = process.env.HARNESS_API_KEY;
+  const receivedKey = req.get('X-Harness-Key');
 
+  if (
+    configuredKey &&
+    receivedKey &&
+    receivedKey === configuredKey
+  ) {
+    return next();
+  }
+
+  if (salesforceAuth.isAuthenticated(req.session)) {
+    return next();
+  }
+
+  return res.status(401).json({
+    error: 'Not authenticated'
+  });
+}
 /**
  * GET /api/classes
  * List all non-test Apex classes in the org.
  */
 router.get('/classes', requireAuth, async (req, res) => {
   try {
-    const conn = salesforceAuth.getConnection(req.session);
+    const conn = await salesforceAuth.getConnection(req.session);
     const classes = await apexClassService.listApexClasses(conn);
 
     // Filter out test classes (those with @isTest in common naming patterns)
@@ -61,7 +80,7 @@ router.get('/classes', requireAuth, async (req, res) => {
  */
 router.get('/classes/:name', requireAuth, async (req, res) => {
   try {
-    const conn = salesforceAuth.getConnection(req.session);
+    const conn = await salesforceAuth.getConnection(req.session);
     const detail = await apexClassService.getApexClassDetail(conn, req.params.name);
     res.json(detail);
   } catch (err) {
@@ -82,7 +101,7 @@ router.post('/harness/run', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Missing className in request body' });
   }
 
-  const conn = salesforceAuth.getConnection(req.session);
+  const conn = await salesforceAuth.getConnection(req.session);
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
   // Initialize job tracking

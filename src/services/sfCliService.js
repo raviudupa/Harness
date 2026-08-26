@@ -68,30 +68,47 @@ async function listCliOrgs() {
 
 /**
  * Get access token and instance URL for a specific org alias or username via CLI.
+ * Uses `sf org display` for org metadata and `sf org auth show-access-token`
+ * for the actual token (since newer CLI versions redact tokens in `sf org display`).
  * @param {string} [targetOrg] - Org alias or username (defaults to default org)
  * @returns {Promise<{accessToken: string, instanceUrl: string, username: string, orgId: string}>}
  */
 async function getCliOrgAuth(targetOrg) {
   const targetFlag = targetOrg ? `--target-org "${targetOrg}"` : '';
-  const cmd = `sf org display ${targetFlag} --json`;
 
-  const rawOutput = await execCommand(cmd);
-  const jsonMatch = rawOutput.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  // 1. Get org metadata (instanceUrl, username, orgId)
+  const displayCmd = `sf org display ${targetFlag} --json`;
+  const displayOutput = await execCommand(displayCmd);
+  const displayMatch = displayOutput.match(/\{[\s\S]*\}/);
+  if (!displayMatch) {
     throw new Error('Could not parse sf org display output');
   }
 
-  const data = JSON.parse(jsonMatch[0]);
-  if (data.status !== 0 || !data.result) {
-    throw new Error(data.message || 'Failed to display org details from sf CLI');
+  const displayData = JSON.parse(displayMatch[0]);
+  if (displayData.status !== 0 || !displayData.result) {
+    throw new Error(displayData.message || 'Failed to display org details from sf CLI');
   }
 
-  const res = data.result;
+  const orgInfo = displayData.result;
+
+  // 2. Get the actual access token (sf org display redacts it in newer CLI versions)
+  const tokenCmd = `sf org auth show-access-token ${targetFlag} --json`;
+  const tokenOutput = await execCommand(tokenCmd);
+  const tokenMatch = tokenOutput.match(/\{[\s\S]*\}/);
+  if (!tokenMatch) {
+    throw new Error('Could not parse sf org auth show-access-token output');
+  }
+
+  const tokenData = JSON.parse(tokenMatch[0]);
+  if (tokenData.status !== 0 || !tokenData.result || !tokenData.result.accessToken) {
+    throw new Error(tokenData.message || 'Failed to retrieve access token from sf CLI');
+  }
+
   return {
-    accessToken: res.accessToken,
-    instanceUrl: res.instanceUrl,
-    username: res.username,
-    orgId: res.id,
+    accessToken: tokenData.result.accessToken,
+    instanceUrl: orgInfo.instanceUrl,
+    username: orgInfo.username,
+    orgId: orgInfo.id,
   };
 }
 

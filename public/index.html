@@ -33,6 +33,10 @@
           </button>
         </div>
 
+        <button id="btn-audit-modal" class="btn btn-secondary" onclick="openAuditModal()" title="View and Download generation history, token usage & costs">
+          📊 Audit Logs (<span id="audit-count">0</span>)
+        </button>
+
         <div id="auth-status" class="auth-status disconnected">
           <span class="status-dot"></span>
           <span class="status-text">Disconnected</span>
@@ -67,12 +71,44 @@
         <div id="code-preview-section" class="code-preview-section" style="display:none;">
           <div class="panel-header">
             <h2>📄 <span id="preview-class-name">Class Preview</span></h2>
-            <button id="btn-generate" class="btn btn-accent" onclick="runHarness()" disabled>
-              🧠 Generate Test
-            </button>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button id="btn-fls-check" class="btn btn-fls" onclick="checkFLS()" disabled title="Analyze Field-Level Security for all objects this class touches">
+                🔐 Check FLS
+              </button>
+              <button id="btn-generate" class="btn btn-accent" onclick="runHarness()" disabled>
+                🧠 Generate Test
+              </button>
+            </div>
+          </div>
+          <!-- Class Character & Line Metrics Bar -->
+          <div id="preview-stats-bar" class="preview-stats-bar">
+            <span class="stat-pill" id="preview-chars-blanks" title="Characters including all spaces, tabs, and newlines">
+              <span class="pill-label">Chars (w/ blanks):</span> <strong class="pill-val">0</strong>
+            </span>
+            <span class="stat-pill" id="preview-chars-no-blanks" title="Characters excluding whitespace">
+              <span class="pill-label">No blanks:</span> <strong class="pill-val">0</strong>
+            </span>
+            <span class="stat-pill" id="preview-chars-spaces" title="Whitespace / blank characters">
+              <span class="pill-label">Blanks:</span> <strong class="pill-val">0</strong>
+            </span>
+            <span class="stat-pill" id="preview-lines" title="Total line count">
+              <span class="pill-label">Lines:</span> <strong class="pill-val">0</strong>
+            </span>
           </div>
           <div class="code-container">
             <pre id="code-preview" class="code-block"><code>Select a class to preview...</code></pre>
+          </div>
+
+          <!-- Standalone FLS Report Panel -->
+          <div id="fls-report-section" class="fls-report-section" style="display:none;">
+            <div class="panel-header collapsible" onclick="toggleSection('fls-report-details')">
+              <div class="section-title-group">
+                <h2>🔐 Field-Level Security Report</h2>
+                <span id="fls-summary-badge" class="fls-summary-badge">—</span>
+              </div>
+              <span class="chevron">▼</span>
+            </div>
+            <div id="fls-report-details" class="collapsible-content"></div>
           </div>
         </div>
       </section>
@@ -98,8 +134,20 @@
             <h2 id="results-title">📊 Test Results</h2>
           </div>
 
-          <!-- Summary Cards -->
+          <!-- Summary Cards (Passed, Failed, Coverage, Tokens, Chars w/ blanks, Claude Cost, Duration) -->
           <div id="results-summary" class="results-summary"></div>
+
+          <!-- AI Token Consumption & Charges Breakdown -->
+          <div id="ai-usage-section" class="ai-usage-section" style="display:none;">
+            <div class="panel-header collapsible" onclick="toggleSection('ai-usage-details')">
+              <div class="section-title-group">
+                <h2>🤖 Claude AI Consumption & Charges</h2>
+                <span id="ai-cost-badge" class="badge-highlight">$0.0000</span>
+              </div>
+              <span class="chevron">▼</span>
+            </div>
+            <div id="ai-usage-details" class="collapsible-content"></div>
+          </div>
 
           <!-- Test Method Results -->
           <div id="test-results" class="test-results"></div>
@@ -107,7 +155,10 @@
           <!-- Generated Test Code -->
           <div id="generated-code-section" class="generated-code-section" style="display:none;">
             <div class="panel-header collapsible" onclick="toggleSection('generated-code-wrap')">
-              <h2>💻 Generated Test Class</h2>
+              <div class="section-title-group">
+                <h2>💻 Generated Test Class</h2>
+                <span id="test-code-metrics" class="code-metrics-badge"></span>
+              </div>
               <div style="display:flex;gap:6px;align-items:center;">
                 <button class="btn btn-small" onclick="event.stopPropagation();copyTestCode()">📋 Copy</button>
                 <span class="chevron">▼</span>
@@ -136,6 +187,127 @@
       </section>
 
     </main>
+  </div>
+
+  <!-- ─── Audit History & Monitoring Modal ────────────────── -->
+  <div id="audit-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeAuditModal()">
+    <div class="modal-dialog modal-large">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h2>📊 Test Generation Audit & Cost Logs</h2>
+          <span class="badge">Monitoring</span>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-accent btn-small" onclick="downloadAuditCSV()">
+            📥 Download CSV
+          </button>
+          <button class="btn btn-secondary btn-small" onclick="downloadAuditJSON()">
+            📥 Download JSON
+          </button>
+          <button class="btn btn-danger btn-small" onclick="clearAuditLogs()">
+            🗑️ Clear
+          </button>
+          <button class="modal-close" onclick="closeAuditModal()">✕</button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- Summary Aggregate Cards -->
+        <div id="audit-summary-cards" class="audit-summary-grid"></div>
+
+        <!-- History Table -->
+        <div class="audit-table-wrapper">
+          <table class="detail-table audit-table">
+            <thead>
+              <tr>
+                <th>Date / Time</th>
+                <th>Apex Class</th>
+                <th>Status</th>
+                <th>Source Chars (w/ blanks)</th>
+                <th>Test Chars (w/ blanks)</th>
+                <th>Tokens (In / Out)</th>
+                <th>Charges (USD)</th>
+                <th>Coverage</th>
+                <th>Attempts</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody id="audit-table-body">
+              <tr>
+                <td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px;">Loading audit logs...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Field-Level Security (FLS) Inspector Modal ──────── -->
+  <div id="fls-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeFLSModal()">
+    <div class="modal-dialog modal-large fls-modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h2>🔐 Field-Level Security (FLS) Inspector</h2>
+          <span id="fls-modal-class-badge" class="badge">Apex Class</span>
+          <span id="fls-modal-status-badge" class="fls-summary-badge fls-badge-danger">202 Blocked</span>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-accent btn-small" onclick="downloadFLSCSV()">
+            📥 Export CSV
+          </button>
+          <button class="modal-close" onclick="closeFLSModal()">✕</button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- Summary Stats Grid -->
+        <div id="fls-modal-summary-cards" class="audit-summary-grid"></div>
+
+        <!-- Warning Callout Box -->
+        <div id="fls-modal-warning" class="fls-warning-banner" style="display:none;"></div>
+
+        <!-- Filter & Search Toolbar -->
+        <div class="fls-toolbar">
+          <div class="fls-search-box">
+            <input type="text" id="fls-search-input" placeholder="🔍 Search field name, label, object, or reason..." oninput="filterFLSModalTable()">
+          </div>
+          <div class="fls-filter-group">
+            <button class="fls-filter-btn active" data-filter="all" onclick="setFLSFilter('all', this)">All Fields (<span id="fls-cnt-all">0</span>)</button>
+            <button class="fls-filter-btn fls-btn-danger" data-filter="blocked" onclick="setFLSFilter('blocked', this)">🔴 Blocked (<span id="fls-cnt-blocked">0</span>)</button>
+            <button class="fls-filter-btn fls-btn-warn" data-filter="readonly" onclick="setFLSFilter('readonly', this)">🟡 Read-Only (<span id="fls-cnt-readonly">0</span>)</button>
+            <button class="fls-filter-btn fls-btn-ok" data-filter="full" onclick="setFLSFilter('full', this)">🟢 Full Access (<span id="fls-cnt-full">0</span>)</button>
+          </div>
+          <select id="fls-modal-object-select" class="fls-obj-select" onchange="filterFLSModalTable()">
+            <option value="all">📦 All SObjects</option>
+          </select>
+        </div>
+
+        <!-- FLS Detailed Table -->
+        <div class="audit-table-wrapper fls-table-wrapper">
+          <table class="detail-table fls-master-table">
+            <thead>
+              <tr>
+                <th>SObject</th>
+                <th>Field API Name</th>
+                <th>Field Label</th>
+                <th>Data Type</th>
+                <th style="text-align:center;">Read</th>
+                <th style="text-align:center;">Create</th>
+                <th style="text-align:center;">Update</th>
+                <th>FLS Status</th>
+                <th>Reason / Action Required</th>
+              </tr>
+            </thead>
+            <tbody id="fls-modal-table-body">
+              <tr>
+                <td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px;">Click "Check FLS" to inspect field permissions.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

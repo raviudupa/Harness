@@ -527,20 +527,48 @@ async function fetchTargetedMetadata(conn, objectFieldsMap) {
   for (const [objectName, usedFieldNames] of objectFieldsMap) {
     try {
       const describeResult = await conn.sobject(objectName).describe();
+      // 1. Build lookup maps from describe fields
       const allFieldsMap = new Map();
+      const relationshipMap = new Map();
       for (const field of describeResult.fields) {
         allFieldsMap.set(field.name.toLowerCase(), field);
+        if (field.relationshipName) {
+          relationshipMap.set(field.relationshipName.toLowerCase(), field);
+        }
+      }
+
+      // Helper to resolve any raw field name to the real schema field
+      function resolveField(raw) {
+        if (!raw) return null;
+        const low = raw.trim().toLowerCase();
+        // Exact name match (e.g. "casenumber", "id", "status")
+        if (allFieldsMap.has(low)) return allFieldsMap.get(low);
+        // Relationship match (e.g. "account" -> AccountId, "recordtype" -> RecordTypeId, "owner" -> OwnerId)
+        if (relationshipMap.has(low)) return relationshipMap.get(low);
+        // Custom relationship "__r" -> "__c" (e.g. "day_visit_plan__r" -> Day_Visit_Plan__c)
+        if (low.endsWith('__r')) {
+          const customName = low.slice(0, -3) + '__c';
+          if (allFieldsMap.has(customName)) return allFieldsMap.get(customName);
+        }
+        // Standard relationship missing "id" (e.g. "contact" -> ContactId, "createdby" -> CreatedById, "parent" -> ParentId)
+        if (!low.endsWith('id')) {
+          if (allFieldsMap.has(low + 'id')) return allFieldsMap.get(low + 'id');
+        }
+        return null;
       }
 
       const relevantFields = new Set();
       const requiredFields = [];
       const lookupFields = [];
+      const missingCustomFields = [];
 
-      // Add used fields (case-insensitively matched to schema)
       for (const rawField of usedFieldNames) {
-        const field = allFieldsMap.get(rawField.toLowerCase());
+        const field = resolveField(rawField);
         if (field) {
           relevantFields.add(field.name);
+        } else if (rawField.toLowerCase().endsWith('__c')) {
+          // Custom field referenced in code but missing from describe (user profile has no FLS/read access)
+          missingCustomFields.push(rawField);
         }
       }
 
@@ -563,12 +591,14 @@ async function fetchTargetedMetadata(conn, objectFieldsMap) {
       for (const fieldName of relevantFields) {
         const field = allFieldsMap.get(fieldName.toLowerCase());
         if (field) {
+          const isAccessible = field.accessible !== undefined ? !!field.accessible : true;
           const meta = {
             type: field.type,
             length: field.length || null,
             required: !field.nillable && field.createable,
-            createable: field.createable,
-            updateable: field.updateable,
+            accessible: isAccessible,
+            createable: !!field.createable,
+            updateable: !!field.updateable,
             formula: field.calculated || false,
             autoNumber: field.autoNumber || false,
             defaultedOnCreate: field.defaultedOnCreate || false,
@@ -598,12 +628,82 @@ async function fetchTargetedMetadata(conn, objectFieldsMap) {
           defaultRecordTypeMapping: rt.defaultRecordTypeMapping,
         }));
 
+      // ── FLS Summary ─────────────────────────────────────
+      const flsSummary = {
+        fullAccess: [],   // accessible + createable
+        readOnly: [],     // accessible but NOT createable (formula, auto-number, system, or FLS-restricted create)
+        noAccess: [],     // NOT accessible — user needs a permission set
+      };
+
+      for (const rawField of missingCustomFields) {
+        flsSummary.noAccess.push({
+          field: rawField,
+          label: rawField,
+          type: 'Custom Field',
+          accessible: false,
+          createable: false,
+          updateable: false,
+          formula: false,
+          autoNumber: false,
+          defaultedOnCreate: false,
+          reason: 'Custom field hidden from schema — user profile/permission set has no Read access',
+        });
+      }
+
+      for (const fieldName of relevantFields) {
+        const field = allFieldsMap.get(fieldName.toLowerCase());
+        if (!field) continue;
+
+        const isAccessible = field.accessible !== undefined ? !!field.accessible : true;
+        const isCreateable = !!field.createable;
+        const isUpdateable = !!field.updateable;
+        const isSystemField = ['id', 'isdeleted', 'createddate', 'createdbyid', 'lastmodifieddate', 'lastmodifiedbyid', 'systemmodstamp'].includes(field.name.toLowerCase());
+
+        const entry = {
+          field: field.name,
+          label: field.label || field.name,
+          type: field.type,
+          accessible: isAccessible,
+          createable: isCreateable,
+          updateable: isUpdateable,
+          formula: !!field.calculated,
+          autoNumber: !!field.autoNumber,
+          defaultedOnCreate: !!field.defaultedOnCreate,
+        };
+
+        if (!isAccessible) {
+          entry.reason = 'Field is not accessible — check FLS / Permission Set';
+          flsSummary.noAccess.push(entry);
+        } else if (!isCreateable) {
+          if (field.name.toLowerCase() === 'id') {
+            entry.reason = 'System Record ID (assigned automatically on insert)';
+          } else if (field.calculated) {
+            entry.reason = 'Formula field (calculated automatically by Salesforce)';
+          } else if (field.autoNumber) {
+            entry.reason = 'Auto-number field (generated automatically by Salesforce)';
+          } else if (isSystemField) {
+            entry.reason = 'System audit field (read-only)';
+          } else {
+            entry.reason = 'Read-only field (cannot be created via DML)';
+          }
+          flsSummary.readOnly.push(entry);
+        } else {
+          entry.reason = 'Full read & create access for test data';
+          flsSummary.fullAccess.push(entry);
+        }
+      }
+
       objectsMetadata[objectName] = {
+        accessible: describeResult.queryable,
+        createable: describeResult.createable,
+        updateable: describeResult.updateable,
+        deletable: describeResult.deletable,
         usedFields: Array.from(relevantFields),
         requiredFields,
         lookupFields,
         fieldMetadata,
         recordTypes,
+        flsSummary,
       };
     } catch (err) {
       console.warn(`[DependencyAnalyzer] Could not describe ${objectName}:`, err.message);

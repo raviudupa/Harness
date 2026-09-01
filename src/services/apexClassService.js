@@ -36,11 +36,11 @@ async function listApexClasses(conn) {
  * Fetch the full body and SymbolTable of a specific Apex class.
  * @param {jsforce.Connection} conn
  * @param {string} className - API name of the Apex class
- * @returns {Promise<{id: string, name: string, body: string, symbolTable: object|null}>}
+ * @returns {Promise<{id: string, name: string, body: string, apiVersion: number|null, symbolTable: object|null}>}
  */
 async function getApexClassDetail(conn, className) {
   const result = await conn.tooling.query(
-    `SELECT Id, Name, Body, SymbolTable
+    `SELECT Id, Name, Body, ApiVersion, SymbolTable
      FROM ApexClass
      WHERE Name = '${className}'
        AND NamespacePrefix = null`
@@ -55,6 +55,7 @@ async function getApexClassDetail(conn, className) {
     id: rec.Id,
     name: rec.Name,
     body: rec.Body,
+    apiVersion: rec.ApiVersion != null ? Number(rec.ApiVersion) : null,
     symbolTable: rec.SymbolTable || null,
   };
 }

@@ -12,8 +12,8 @@
  */
 const Anthropic = require('@anthropic-ai/sdk');
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-3-7-sonnet-20250219';
-const MAX_TOKENS = 8192;
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5';
+const MAX_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS || '128000', 10);
 
 let anthropicClient = null;
 
@@ -25,6 +25,55 @@ function getClient() {
   }
   return anthropicClient;
 }
+
+/**
+ * Smart brace-balancing repair for truncated Apex code.
+ * Counts unmatched '{' vs '}' (ignoring those inside string literals)
+ * and appends the correct number of closing braces.
+ * Also strips any dangling incomplete line at the truncation point.
+ */
+function repairUnbalancedBraces(code) {
+  // Strip any trailing incomplete line (truncated mid-statement)
+  const lines = code.split('\n');
+  const lastLine = lines[lines.length - 1].trim();
+  if (lastLine && !lastLine.endsWith('}') && !lastLine.endsWith('{') &&
+      !lastLine.endsWith(';') && !lastLine.endsWith('*/') && !lastLine.endsWith('//')) {
+    lines.pop();
+    code = lines.join('\n');
+  }
+
+  // Count unmatched braces (skip braces inside string literals)
+  let depth = 0;
+  let inString = false;
+  let stringChar = '';
+  let prevChar = '';
+
+  for (const ch of code) {
+    if (inString) {
+      if (ch === stringChar && prevChar !== '\\') {
+        inString = false;
+      }
+    } else {
+      if (ch === "'" || ch === '"') {
+        inString = true;
+        stringChar = ch;
+      } else if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+      }
+    }
+    prevChar = ch;
+  }
+
+  if (depth > 0) {
+    console.log(`[ClaudeService] Brace repair: adding ${depth} closing brace(s)`);
+    code += '\n' + '}\n'.repeat(depth).trimEnd();
+  }
+
+  return code;
+}
+
 
 function buildSystemPrompt() {
   return `You are a Principal Salesforce Architect and Apex testing expert.
@@ -306,8 +355,8 @@ ${previousAttempt.testClassBody}
 === COMPILATION / RUNTIME ERRORS ===
 ${previousAttempt.compileError ? `COMPILE ERROR: ${previousAttempt.compileError}\n` : ''}
 ${(previousAttempt.errors || []).map((e) =>
-  `Method: ${e.methodName}\nError: ${e.message}\nStack Trace: ${e.stackTrace || 'N/A'}`
-).join('\n\n')}
+      `Method: ${e.methodName}\nError: ${e.message}\nStack Trace: ${e.stackTrace || 'N/A'}`
+    ).join('\n\n')}
 
 ${formatErrorHistory(errorHistory)}
 === METADATA CONTEXT ===
@@ -320,12 +369,12 @@ Return ONLY the raw fixed Apex code.`;
 
   console.log(`[ClaudeService] Calling Claude (${CLAUDE_MODEL}) to ${previousAttempt ? 'fix' : 'generate'} test class...`);
 
-  const response = await client.messages.create({
+  const response = await client.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: MAX_TOKENS,
     system: buildSystemPrompt(),
     messages: [{ role: 'user', content: userMessage }],
-  });
+  }).finalMessage();
 
   let testClassBody = '';
   for (const block of response.content) {
@@ -340,14 +389,15 @@ Return ONLY the raw fixed Apex code.`;
     .replace(/\n?```\s*$/i, '')
     .trim();
 
-  // If Claude got cut off due to max_tokens, ensure safety check
-  if (response.stop_reason === 'max_tokens' && !testClassBody.endsWith('}')) {
-    console.warn('[ClaudeService] Warning: Output was truncated by max_tokens limit. Attempting auto-close.');
-    testClassBody += '\n}';
+  // If Claude got cut off due to max_tokens, repair unbalanced braces
+  if (response.stop_reason === 'max_tokens') {
+    console.warn('[ClaudeService] Warning: Output was truncated by max_tokens limit. Attempting smart brace repair...');
+    testClassBody = repairUnbalancedBraces(testClassBody);
   }
 
   const inputTokens = response.usage?.input_tokens || 0;
   const outputTokens = response.usage?.output_tokens || 0;
+<<<<<<< Updated upstream
   const cacheCreationTokens = response.usage?.cache_creation_input_tokens || 0;
   const cacheReadTokens = response.usage?.cache_read_input_tokens || 0;
 
@@ -356,6 +406,21 @@ Return ONLY the raw fixed Apex code.`;
   const outputChars = testClassBody.length;
 
   console.log(`[ClaudeService] Received test class (${testClassBody.length} chars, stop_reason: ${response.stop_reason}, tokens: ${inputTokens}in/${outputTokens}out)`);
+=======
+  const cost = calculateClaudeCost(CLAUDE_MODEL, inputTokens, outputTokens);
+
+  const inputCharsWithBlanks = userMessage.length;
+  const inputCharsWithoutBlanks = userMessage.replace(/\s/g, '').length;
+  const inputWhitespaceChars = inputCharsWithBlanks - inputCharsWithoutBlanks;
+
+  const outputCharsWithBlanks = testClassBody.length;
+  const outputCharsWithoutBlanks = testClassBody.replace(/\s/g, '').length;
+  const outputWhitespaceChars = outputCharsWithBlanks - outputCharsWithoutBlanks;
+
+  console.log(
+    `[ClaudeService] Received test class (${outputCharsWithBlanks} chars w/ blanks, ${inputTokens + outputTokens} tokens, Cost: ${cost.formattedCost})`
+  );
+>>>>>>> Stashed changes
 
   return {
     testClassName,
@@ -364,16 +429,76 @@ Return ONLY the raw fixed Apex code.`;
     tokensUsed: {
       input: inputTokens,
       output: outputTokens,
+<<<<<<< Updated upstream
       cacheCreation: cacheCreationTokens,
       cacheRead: cacheReadTokens,
     },
     charsUsed: {
       input: inputChars,
       output: outputChars,
+=======
+      total: inputTokens + outputTokens,
+>>>>>>> Stashed changes
     },
+    cost,
+    characterMetrics: {
+      input: {
+        withBlanks: inputCharsWithBlanks,
+        withoutBlanks: inputCharsWithoutBlanks,
+        whitespace: inputWhitespaceChars,
+      },
+      output: {
+        withBlanks: outputCharsWithBlanks,
+        withoutBlanks: outputCharsWithoutBlanks,
+        whitespace: outputWhitespaceChars,
+        lines: testClassBody.split('\n').length,
+      },
+    },
+  };
+}
+
+const MODEL_RATES = {
+  // Rates per 1,000,000 tokens (USD)
+  'claude-3-7-sonnet': { input: 3.00, output: 15.00 },
+  'claude-3-5-sonnet': { input: 3.00, output: 15.00 },
+  'claude-3-sonnet': { input: 3.00, output: 15.00 },
+  'claude-3-5-haiku': { input: 0.80, output: 4.00 },
+  'claude-3-haiku': { input: 0.25, output: 1.25 },
+  'claude-3-opus': { input: 15.00, output: 75.00 },
+};
+
+function getModelRates(modelName = CLAUDE_MODEL) {
+  const normalized = (modelName || '').toLowerCase();
+  for (const [key, rates] of Object.entries(MODEL_RATES)) {
+    if (normalized.includes(key)) {
+      return { ...rates, matchedModel: key };
+    }
+  }
+  return { input: 3.00, output: 15.00, matchedModel: 'claude-3-7-sonnet' };
+}
+
+function calculateClaudeCost(modelName, inputTokens, outputTokens) {
+  const rates = getModelRates(modelName);
+  const inputCost = (inputTokens / 1_000_000) * rates.input;
+  const outputCost = (outputTokens / 1_000_000) * rates.output;
+  const totalCost = inputCost + outputCost;
+
+  return {
+    model: modelName,
+    rates: {
+      inputPerMillionUSD: rates.input,
+      outputPerMillionUSD: rates.output,
+    },
+    inputCostUSD: Number(inputCost.toFixed(6)),
+    outputCostUSD: Number(outputCost.toFixed(6)),
+    totalCostUSD: Number(totalCost.toFixed(6)),
+    formattedCost: `$${totalCost.toFixed(4)}`,
   };
 }
 
 module.exports = {
   generateTestClass,
+  calculateClaudeCost,
+  getModelRates,
 };
+

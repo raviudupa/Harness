@@ -21,10 +21,12 @@ const apexClassService = require('./apexClassService');
 const dependencyAnalyzer = require('./dependencyAnalyzer');
 const claudeService = require('./claudeService');
 const testDeployer = require('./testDeployer');
+const auditLogger = require('./auditLogger');
 
 const MIN_FIX_RETRIES = 3;
 const MAX_FIX_RETRIES = parseInt(process.env.MAX_FIX_RETRIES || '3', 10);
 const MIN_COVERAGE_PERCENT = parseInt(process.env.MIN_COVERAGE_PERCENT || '80', 10);
+const PREFLIGHT_COMPILE_CHECK = process.env.PREFLIGHT_COMPILE_CHECK !== 'false';
 
 // ─── Claude Pricing (per 1M tokens) ──────────────────────
 // Pricing table: model prefix → { input, output } in USD per 1M tokens
@@ -98,6 +100,62 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       bodyLength: classDetail.body.length,
     });
 
+    // ─── Step 1.5: Pre-flight compile check ────────────────
+    // A broken class under test can never have a deployable test class, so fail
+    // fast here instead of burning LLM calls on an unfixable error.
+    if (PREFLIGHT_COMPILE_CHECK) {
+      progress('preflight', `Verifying ${className} compiles in the org...`);
+      const preflight = await testDeployer.verifySourceClassCompiles(
+        conn,
+        className,
+        classDetail.id,
+        classDetail.body
+      );
+
+      if (!preflight.compiles) {
+        const diagnosis = testDeployer.diagnoseCompileError(preflight.error, classDetail.apiVersion);
+        const reason = `'${className}' does not compile in this org. `
+          + 'Fix the compile error below and re-run the harness — no test class can be '
+          + 'deployed against a broken class, so generation was skipped (no AI cost incurred).';
+
+        progress('failed', `❌ Pre-flight failed: ${reason}`, {
+          error: preflight.error,
+          offendingClass: className,
+          apiVersion: classDetail.apiVersion,
+          likelyCause: diagnosis.likelyCause,
+          hints: diagnosis.hints,
+          unfixableByAI: true,
+        });
+
+        if (diagnosis.likelyCause) {
+          console.error(`[Harness] Likely cause: ${diagnosis.likelyCause}`);
+        }
+        diagnosis.hints.forEach((h, i) => console.error(`[Harness] Fix ${i + 1}: ${h}`));
+
+        return {
+          success: false,
+          className,
+          testClassName: null,
+          testClassBody: null,
+          testResults: [],
+          summary: { compileError: preflight.error },
+          unfixableByAI: true,
+          offendingClass: className,
+          error: reason,
+          compileError: preflight.error,
+          apiVersion: classDetail.apiVersion,
+          likelyCause: diagnosis.likelyCause,
+          hints: diagnosis.hints,
+          attempts: 0,
+          totalTokensUsed: { input: 0, output: 0, total: 0 },
+          duration: Date.now() - startTime,
+          log,
+        };
+      }
+
+      progress('preflight', `${className} compiles cleanly — proceeding.`);
+    }
+
     // ─── Step 2: Check for existing test class ─────────────
     progress('check', `Checking for existing test class...`);
     const existingTest = await apexClassService.getExistingTestClass(conn, className);
@@ -150,9 +208,17 @@ async function executeHarness(conn, className, onProgress = () => {}) {
     let previousAttempt = null;
     let finalTestClassBody = null;
     let finalTestClassName = null;
+<<<<<<< Updated upstream
     let totalTokensUsed = { input: 0, output: 0 };
     let totalCharsUsed = { input: 0, output: 0 };
     let usedModel = null;
+=======
+    let totalTokensUsed = { input: 0, output: 0, total: 0 };
+    let totalCostUSD = 0;
+    let totalPromptCharsWithBlanks = 0;
+    let totalGeneratedCharsWithBlanks = 0;
+    const attemptsUsage = [];
+>>>>>>> Stashed changes
 
     // Error history — accumulates ALL errors across ALL attempts
     const errorHistory = [];
@@ -163,6 +229,7 @@ async function executeHarness(conn, className, onProgress = () => {}) {
 
       // ── Generate / Fix ────────────────────────────────
       progress('generate', `${label}: ${isRetry ? 'Fixing' : 'Generating'} test class via Claude...`);
+      const genStartTime = Date.now();
       const generated = await claudeService.generateTestClass(
         classDetail.body,
         className,
@@ -173,9 +240,11 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           errorHistory: isRetry ? errorHistory : [],
         }
       );
+      const genDuration = Date.now() - genStartTime;
 
       finalTestClassName = generated.testClassName;
       finalTestClassBody = generated.testClassBody;
+<<<<<<< Updated upstream
       totalTokensUsed.input += generated.tokensUsed.input;
       totalTokensUsed.output += generated.tokensUsed.output;
       if (generated.charsUsed) {
@@ -185,12 +254,45 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       if (generated.model) usedModel = generated.model;
 
       const stepCost = calculateCost(generated.tokensUsed, usedModel);
+=======
+      
+      const inTokens = generated.tokensUsed.input || 0;
+      const outTokens = generated.tokensUsed.output || 0;
+      const costUSD = generated.cost?.totalCostUSD || 0;
+      const inChars = generated.characterMetrics?.input?.withBlanks || 0;
+      const outChars = generated.characterMetrics?.output?.withBlanks || finalTestClassBody.length;
+>>>>>>> Stashed changes
 
-      progress('generate', `${label}: Test class generated (${finalTestClassBody.length} chars)`, {
+      totalTokensUsed.input += inTokens;
+      totalTokensUsed.output += outTokens;
+      totalTokensUsed.total = totalTokensUsed.input + totalTokensUsed.output;
+      totalCostUSD += costUSD;
+      totalPromptCharsWithBlanks += inChars;
+      totalGeneratedCharsWithBlanks += outChars;
+
+      const attemptRecord = {
+        attempt: attempt + 1,
+        label: isRetry ? (previousAttempt?.coverageIssue ? 'Coverage Boost' : 'Auto-Fix') : 'Initial Generation',
+        model: generated.model,
+        tokensUsed: generated.tokensUsed,
+        cost: generated.cost,
+        characterMetrics: generated.characterMetrics,
+        durationMs: genDuration,
+      };
+      attemptsUsage.push(attemptRecord);
+
+      progress('generate', `${label}: Test class generated (${outChars} chars w/ blanks, ${inTokens + outTokens} tokens, Cost: ${generated.cost?.formattedCost || '$0.00'})`, {
         testClassName: finalTestClassName,
         tokensUsed: generated.tokensUsed,
+<<<<<<< Updated upstream
         charsUsed: generated.charsUsed || {},
         estimatedCost: stepCost,
+=======
+        cost: generated.cost,
+        characterMetrics: generated.characterMetrics,
+        attempt: attempt + 1,
+        totalCumulativeCost: `$${totalCostUSD.toFixed(4)}`,
+>>>>>>> Stashed changes
       });
 
       // ── Deploy ────────────────────────────────────────
@@ -207,6 +309,46 @@ async function executeHarness(conn, className, onProgress = () => {}) {
         progress('deploy', `${label}: Compilation failed — ${deployResult.error}`, {
           error: deployResult.error,
         });
+
+        // Stop immediately if the failure is in another class — retrying is pointless
+        const classification = testDeployer.classifyDeployError(deployResult.error, finalTestClassName);
+        if (classification.fatal) {
+          const diagnosis = testDeployer.diagnoseCompileError(deployResult.error, null);
+
+          progress('failed', `❌ Aborting auto-fix: ${classification.reason}`, {
+            error: deployResult.error,
+            offendingClass: classification.offendingClass,
+            likelyCause: diagnosis.likelyCause,
+            hints: diagnosis.hints,
+            unfixableByAI: true,
+          });
+
+          if (diagnosis.likelyCause) {
+            console.error(`[Harness] Likely cause: ${diagnosis.likelyCause}`);
+          }
+          diagnosis.hints.forEach((h, i) => console.error(`[Harness] Fix ${i + 1}: ${h}`));
+
+          const abortPayload = {
+            success: false,
+            className,
+            testClassName: finalTestClassName,
+            testClassBody: finalTestClassBody,
+            testResults: [],
+            summary: { compileError: deployResult.error },
+            unfixableByAI: true,
+            offendingClass: classification.offendingClass,
+            error: classification.reason,
+            likelyCause: diagnosis.likelyCause,
+            hints: diagnosis.hints,
+            dependencyReport,
+            attempts: attempt + 1,
+            totalTokensUsed,
+            duration: Date.now() - startTime,
+            log,
+          };
+
+          return abortPayload;
+        }
 
         // Record this error in history
         errorHistory.push({
@@ -236,8 +378,29 @@ async function executeHarness(conn, className, onProgress = () => {}) {
 
       // ── Run Tests ─────────────────────────────────────
       progress('test', `${label}: Running tests...`);
-      const testResult = await testDeployer.runTests(conn, finalTestClassName);
+      const testResult = await testDeployer.runTests(conn, finalTestClassName, deployResult.classId);
       lastResult = { ...testResult, classId: deployResult.classId };
+
+      // Handle API-level test run errors (e.g., "Invalid ID or name")
+      if (testResult.summary.error && testResult.results.length === 0) {
+        progress('test', `${label}: Test run error — ${testResult.summary.error}`, {
+          summary: testResult.summary,
+        });
+
+        errorHistory.push({
+          attempt: attempt + 1,
+          compileError: `Test run API error: ${testResult.summary.error}`,
+          errors: [],
+        });
+
+        previousAttempt = {
+          testClassBody: finalTestClassBody,
+          errors: [],
+          compileError: `Test run API error: ${testResult.summary.error}`,
+        };
+        attempt++;
+        continue;
+      }
 
       progress('test', `${label}: Tests complete — ${testResult.summary.passed} passed, ${testResult.summary.failed} failed`, {
         summary: testResult.summary,
@@ -285,11 +448,43 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           attempts: attempt + 1,
           coverage,
           targetMet,
+          totalCostUSD,
+          formattedCost: `$${totalCostUSD.toFixed(4)}`,
         });
 
+<<<<<<< Updated upstream
         const totalCost = calculateCost(totalTokensUsed, usedModel);
 
         return {
+=======
+        const aiUsage = {
+          model: attemptsUsage[0]?.model || process.env.CLAUDE_MODEL || 'claude-3-7-sonnet',
+          totalInputTokens: totalTokensUsed.input,
+          totalOutputTokens: totalTokensUsed.output,
+          totalTokens: totalTokensUsed.total,
+          totalCostUSD: Number(totalCostUSD.toFixed(6)),
+          formattedCost: `$${totalCostUSD.toFixed(4)}`,
+          attempts: attemptsUsage,
+          characterStats: {
+            sourceClass: {
+              withBlanks: classDetail.body.length,
+              withoutBlanks: classDetail.body.replace(/\s/g, '').length,
+              whitespace: classDetail.body.length - classDetail.body.replace(/\s/g, '').length,
+              lines: classDetail.body.split('\n').length,
+            },
+            testClass: {
+              withBlanks: finalTestClassBody ? finalTestClassBody.length : 0,
+              withoutBlanks: finalTestClassBody ? finalTestClassBody.replace(/\s/g, '').length : 0,
+              whitespace: finalTestClassBody ? (finalTestClassBody.length - finalTestClassBody.replace(/\s/g, '').length) : 0,
+              lines: finalTestClassBody ? finalTestClassBody.split('\n').length : 0,
+            },
+            totalPromptCharsWithBlanks,
+            totalGeneratedCharsWithBlanks,
+          },
+        };
+
+        const resultPayload = {
+>>>>>>> Stashed changes
           success: true,
           className,
           testClassName: finalTestClassName,
@@ -302,11 +497,27 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           dependencyReport,
           attempts: attempt + 1,
           totalTokensUsed,
+<<<<<<< Updated upstream
           totalCharsUsed,
           estimatedCost: totalCost,
+=======
+          aiUsage,
+>>>>>>> Stashed changes
           duration: Date.now() - startTime,
           log,
         };
+
+        // Log to persistent Audit History
+        auditLogger.logRun({
+          ...resultPayload,
+          characterStats: aiUsage.characterStats,
+          costUSD: aiUsage.totalCostUSD,
+          formattedCost: aiUsage.formattedCost,
+          model: aiUsage.model,
+          tokensUsed: totalTokensUsed,
+        });
+
+        return resultPayload;
       }
 
       // Tests failed — record in history and set up for retry
@@ -340,9 +551,39 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       lastResults: lastResult?.results || [],
     });
 
+<<<<<<< Updated upstream
     const totalCost = calculateCost(totalTokensUsed, usedModel);
 
     return {
+=======
+    const aiUsageFailed = {
+      model: attemptsUsage[0]?.model || process.env.CLAUDE_MODEL || 'claude-3-7-sonnet',
+      totalInputTokens: totalTokensUsed.input,
+      totalOutputTokens: totalTokensUsed.output,
+      totalTokens: totalTokensUsed.total,
+      totalCostUSD: Number(totalCostUSD.toFixed(6)),
+      formattedCost: `$${totalCostUSD.toFixed(4)}`,
+      attempts: attemptsUsage,
+      characterStats: {
+        sourceClass: {
+          withBlanks: classDetail.body.length,
+          withoutBlanks: classDetail.body.replace(/\s/g, '').length,
+          whitespace: classDetail.body.length - classDetail.body.replace(/\s/g, '').length,
+          lines: classDetail.body.split('\n').length,
+        },
+        testClass: {
+          withBlanks: finalTestClassBody ? finalTestClassBody.length : 0,
+          withoutBlanks: finalTestClassBody ? finalTestClassBody.replace(/\s/g, '').length : 0,
+          whitespace: finalTestClassBody ? (finalTestClassBody.length - finalTestClassBody.replace(/\s/g, '').length) : 0,
+          lines: finalTestClassBody ? finalTestClassBody.split('\n').length : 0,
+        },
+        totalPromptCharsWithBlanks,
+        totalGeneratedCharsWithBlanks,
+      },
+    };
+
+    const failedPayload = {
+>>>>>>> Stashed changes
       success: false,
       className,
       testClassName: finalTestClassName,
@@ -352,11 +593,27 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       dependencyReport,
       attempts: MAX_FIX_RETRIES + 1,
       totalTokensUsed,
+<<<<<<< Updated upstream
       totalCharsUsed,
       estimatedCost: totalCost,
+=======
+      aiUsage: aiUsageFailed,
+>>>>>>> Stashed changes
       duration: Date.now() - startTime,
       log,
     };
+
+    // Log to persistent Audit History
+    auditLogger.logRun({
+      ...failedPayload,
+      characterStats: aiUsageFailed.characterStats,
+      costUSD: aiUsageFailed.totalCostUSD,
+      formattedCost: aiUsageFailed.formattedCost,
+      model: aiUsageFailed.model,
+      tokensUsed: totalTokensUsed,
+    });
+
+    return failedPayload;
 
   } catch (err) {
     progress('error', `Fatal error: ${err.message}`, { error: err.stack });

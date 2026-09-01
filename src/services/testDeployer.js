@@ -51,7 +51,7 @@ async function deployTestClass(conn, testClassName, testClassBody, existingClass
     } else {
       // ── Update Existing Class via MetadataContainer ──────────
       console.log(`[TestDeployer] Updating existing ApexClass ${classId} via MetadataContainer...`);
-      return await deployViaContainer(conn, classId, testClassName, testClassBody);
+      return await deployViaContainer(conn, classId, testClassName, testClassBody, false);
     }
 
   } catch (err) {
@@ -66,8 +66,9 @@ async function deployTestClass(conn, testClassName, testClassBody, existingClass
 
 /**
  * Deploy update via MetadataContainer + ContainerAsyncRequest
+ * @param {boolean} checkOnly - When true, compile only and never save changes
  */
-async function deployViaContainer(conn, classId, testClassName, testClassBody) {
+async function deployViaContainer(conn, classId, testClassName, testClassBody, checkOnly = false) {
   const containerName = `Container_${Date.now()}`;
   const container = await conn.tooling.sobject('MetadataContainer').create({
     Name: containerName,
@@ -92,7 +93,7 @@ async function deployViaContainer(conn, classId, testClassName, testClassBody) {
   // Submit request
   const asyncReq = await conn.tooling.sobject('ContainerAsyncRequest').create({
     MetadataContainerId: containerId,
-    IsCheckOnly: false,
+    IsCheckOnly: checkOnly,
   });
 
   if (!asyncReq.success) {
@@ -154,10 +155,150 @@ async function pollContainerAsyncRequest(conn, requestId, classId) {
 }
 
 /**
- * Run Apex tests for a given test class and return results.
+ * Pre-flight check: verify the class under test actually compiles in the org.
+ *
+ * Performs a check-only compile of the class's own, unmodified body. Nothing is
+ * saved. If this fails, the class is already broken in the org and no generated
+ * test class can ever deploy against it — so the harness should stop before
+ * spending any money on the LLM.
+ *
+ * @param {jsforce.Connection} conn
+ * @param {string} className
+ * @param {string} classId - ApexClass Id of the class under test
+ * @param {string} classBody - Current source body of the class
+ * @returns {Promise<{compiles: boolean, error: string|null}>}
  */
-async function runTests(conn, testClassName) {
-  console.log(`[TestDeployer] Running tests for: ${testClassName}...`);
+async function verifySourceClassCompiles(conn, className, classId, classBody) {
+  console.log(`[TestDeployer] Pre-flight compile check for ${className}...`);
+
+  if (!classId || !classBody) {
+    return { compiles: true, error: null };
+  }
+
+  try {
+    const result = await deployViaContainer(conn, classId, className, classBody, true);
+    if (result.success) {
+      console.log(`[TestDeployer] Pre-flight OK: ${className} compiles cleanly.`);
+      return { compiles: true, error: null };
+    }
+    console.error(`[TestDeployer] Pre-flight FAILED for ${className}: ${result.error}`);
+    return { compiles: false, error: result.error };
+  } catch (err) {
+    // Never block the pipeline because the check itself could not run
+    console.warn(`[TestDeployer] Pre-flight check could not run for ${className}: ${err.message}`);
+    return { compiles: true, error: null };
+  }
+}
+
+// Minimum API version required for specific fields/features that commonly
+// break compilation on classes left on old API versions.
+const API_VERSION_REQUIREMENTS = [
+  { pattern: /No such column '?DeveloperName'? on entity '?RecordType'?/i, field: 'RecordType.DeveloperName', minVersion: 43.0 },
+  { pattern: /No such column '?SObjectType'?/i, field: 'SObjectType on RecordType', minVersion: 43.0 },
+];
+
+/**
+ * Turn a raw Apex compile error into concrete, actionable fix suggestions.
+ *
+ * @param {string} errorMsg - Raw compile error from Salesforce
+ * @param {number|null} apiVersion - ApiVersion of the offending class
+ * @returns {{hints: string[], likelyCause: string|null}}
+ */
+function diagnoseCompileError(errorMsg, apiVersion = null) {
+  const msg = errorMsg || '';
+  const hints = [];
+  let likelyCause = null;
+
+  // 1. Old API version blocking a newer field/feature
+  for (const req of API_VERSION_REQUIREMENTS) {
+    if (req.pattern.test(msg)) {
+      if (apiVersion != null && apiVersion < req.minVersion) {
+        likelyCause = `The class is on API version ${apiVersion}, but '${req.field}' requires ${req.minVersion}+.`;
+        hints.push(`Raise the class ApiVersion to ${req.minVersion} or higher (Setup → Apex Classes → Edit, or update the .cls-meta.xml <apiVersion>).`);
+      } else {
+        hints.push(`'${req.field}' requires API version ${req.minVersion}+. Verify the class ApiVersion.`);
+      }
+      hints.push(`Alternatively, remove '${req.field}' from the query and resolve it via Schema describe calls instead.`);
+    }
+  }
+
+  // 2. Missing field / no access
+  const columnMatch = /No such column '?([A-Za-z0-9_]+)'? on (?:entity|table) '?([A-Za-z0-9_]+)'?/i.exec(msg);
+  if (columnMatch && hints.length === 0) {
+    const [, field, entity] = columnMatch;
+    likelyCause = `Field '${field}' is not visible on '${entity}' for this class or user.`;
+    hints.push(`Confirm '${field}' exists on '${entity}' and is spelled correctly (custom fields need the '__c' suffix).`);
+    hints.push(`Check field-level security — the integration user may lack read access to '${entity}.${field}'.`);
+  }
+
+  // 3. Missing type
+  const typeMatch = /Invalid type:\s*([A-Za-z0-9_.]+)/i.exec(msg);
+  if (typeMatch) {
+    const type = typeMatch[1];
+    likelyCause = likelyCause || `Type '${type}' does not exist in this org.`;
+    hints.push(`'${type}' is not available in this org — check for a missing managed package, a deleted object, or a required namespace prefix.`);
+  }
+
+  // 4. Signature drift
+  const methodMatch = /Method does not exist or incorrect signature:\s*(?:void\s+)?([A-Za-z0-9_]+)/i.exec(msg);
+  if (methodMatch) {
+    likelyCause = likelyCause || `Method '${methodMatch[1]}' does not match any existing signature.`;
+    hints.push(`Verify the signature of '${methodMatch[1]}' (name, parameter types and order, static vs instance, and its access modifier).`);
+  }
+
+  // 5. Broken dependency chain
+  const dependentMatch = /Dependent class is invalid and needs recompilation:\s*Class\s+([A-Za-z0-9_]+)/i.exec(msg);
+  if (dependentMatch) {
+    hints.push(`Fix '${dependentMatch[1]}' first — compile errors cascade, so start with the innermost broken class.`);
+  }
+
+  if (hints.length === 0) {
+    hints.push('Open the class in Setup → Apex Classes and save it; the inline compiler will pinpoint the failing line.');
+  }
+
+  return { hints, likelyCause };
+}
+
+/**
+ * Classify a deployment error to determine whether it originates from the
+ * generated test class or from a pre-existing compile problem in another class.
+ *
+ * Deploying a test class forces Salesforce to recompile every class it touches.
+ * If the class under test is already broken in the org, the deploy fails with an
+ * error that has nothing to do with the generated test — retrying with a new
+ * test class can never fix it.
+ *
+ * @param {string} errorMsg - Error text returned by deployTestClass
+ * @param {string} testClassName - Name of the generated test class
+ * @returns {{fatal: boolean, offendingClass: string|null, reason: string|null}}
+ */
+function classifyDeployError(errorMsg, testClassName) {
+  const msg = errorMsg || '';
+
+  const dependentMatch = /Dependent class is invalid and needs recompilation:\s*Class\s+([A-Za-z0-9_]+)/i.exec(msg);
+  if (dependentMatch && dependentMatch[1] !== testClassName) {
+    const offendingClass = dependentMatch[1];
+    return {
+      fatal: true,
+      offendingClass,
+      reason: `The class '${offendingClass}' does not compile in this org. `
+        + 'This is a pre-existing org/metadata problem, not a defect in the generated test class, '
+        + 'so regenerating the test cannot resolve it. Fix the compile error in '
+        + `'${offendingClass}' (or its API version) and re-run the harness.`,
+    };
+  }
+
+  return { fatal: false, offendingClass: null, reason: null };
+}
+
+/**
+ * Run Apex tests for a given test class and return results.
+ * @param {jsforce.Connection} conn
+ * @param {string} testClassName - Name of the test class (for logging)
+ * @param {string} classId - The Salesforce ApexClass Id (18-char)
+ */
+async function runTests(conn, testClassName, classId) {
+  console.log(`[TestDeployer] Running tests for: ${testClassName} (${classId})...`);
 
   try {
     const runResult = await conn.request({
@@ -165,7 +306,7 @@ async function runTests(conn, testClassName) {
       url: `/services/data/v${SF_API_VERSION}/tooling/runTestsAsynchronous`,
       body: JSON.stringify({
         testLevel: 'RunSpecifiedTests',
-        classNames: testClassName,
+        classids: classId,
       }),
       headers: { 'Content-Type': 'application/json' },
     });
@@ -179,7 +320,7 @@ async function runTests(conn, testClassName) {
     return {
       success: false,
       results: [],
-      summary: { error: err.message },
+      summary: { total: 0, passed: 0, failed: 0, errors: 0, error: err.message },
     };
   }
 }
@@ -299,6 +440,9 @@ async function getCodeCoverage(conn, className) {
 
 module.exports = {
   deployTestClass,
+  verifySourceClassCompiles,
+  diagnoseCompileError,
+  classifyDeployError,
   runTests,
   getCodeCoverage,
 };

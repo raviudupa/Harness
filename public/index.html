@@ -1,13 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="AI-powered Salesforce Apex test generation and auto-fix harness powered by Claude LLM">
   <title>Apex Test Harness — AI-Powered Test Generation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
 </head>
 <body>
@@ -23,13 +22,13 @@
         <span class="badge">AI-Powered</span>
       </div>
       <div class="header-right">
-        <!-- SF CLI Org Selector -->
+        <!-- SF CLI Org Quick Selector -->
         <div id="cli-connect-container" class="cli-connect-container">
           <select id="cli-org-select" class="cli-org-select">
             <option value="">Detecting CLI orgs...</option>
           </select>
           <button id="btn-cli-connect" class="btn btn-accent" onclick="connectViaCli()">
-            ⚡ Connect Org
+            ⚡ Connect
           </button>
         </div>
 
@@ -42,21 +41,31 @@
           <span class="status-text">Disconnected</span>
         </div>
         <button id="btn-auth" class="btn btn-secondary" onclick="handleAuth()">
-          OAuth Login
+          🔑 Connect Org
+        </button>
+
+        <!-- Material UI Theme Toggle Button -->
+        <button id="btn-theme-toggle" class="btn btn-theme-toggle" onclick="toggleTheme()" title="Switch to Light Mode" aria-label="Toggle dark and light theme">
+          <span class="theme-toggle-track">
+            <span class="theme-toggle-icon theme-icon-sun" title="Light">☀️</span>
+            <span class="theme-toggle-icon theme-icon-moon" title="Dark">🌙</span>
+            <span class="theme-toggle-thumb"></span>
+          </span>
+          <span id="theme-toggle-text" class="theme-toggle-label">Dark</span>
         </button>
       </div>
     </header>
 
     <!-- ─── Main Content ────────────────────────────────── -->
-    <main class="main-content">
+    <main class="main-content studio-layout">
 
-      <!-- Left Panel: Class Selector + Preview -->
-      <section class="panel panel-left">
+      <!-- ─── Column 1: Apex Classes Sidebar ────────────────── -->
+      <aside id="studio-sidebar" class="panel studio-sidebar">
         <div class="panel-header">
           <h2>📂 Apex Classes</h2>
-          <div class="search-box" id="search-container" style="display:none;">
-            <input type="text" id="class-search" placeholder="Search classes..." oninput="filterClasses()">
-          </div>
+        </div>
+        <div class="search-box" id="search-container" style="display:none; padding: 10px 14px; border-bottom: 1px solid var(--border);">
+          <input type="text" id="class-search" placeholder="🔍 Search classes..." oninput="filterClasses()">
         </div>
 
         <div id="class-list-container" class="class-list-container">
@@ -66,20 +75,48 @@
           </div>
           <ul id="class-list" class="class-list" style="display:none;"></ul>
         </div>
+      </aside>
 
-        <!-- Code Preview -->
+      <!-- ─── Resizer 1 (Left Splitter) ────────────────────── -->
+      <div id="resizer-left" class="pane-resizer" title="Drag to resize sidebar"></div>
+
+      <!-- ─── Column 2: Code Preview & Control Studio ───────── -->
+      <section id="studio-editor" class="panel studio-editor">
+        <!-- Default Empty State when no class is selected -->
+        <div id="editor-empty" class="empty-state editor-empty-state">
+          <div class="empty-icon">📄</div>
+          <h3>Select an Apex Class</h3>
+          <p>Choose an Apex class from the sidebar to inspect source code, verify Field-Level Security, and generate AI test classes.</p>
+        </div>
+
+        <!-- Code Preview Card -->
         <div id="code-preview-section" class="code-preview-section" style="display:none;">
-          <div class="panel-header">
-            <h2>📄 <span id="preview-class-name">Class Preview</span></h2>
-            <div style="display:flex;gap:8px;align-items:center;">
+          <div class="panel-header editor-header">
+            <div class="editor-title-group">
+              <span class="file-icon">⚡</span>
+              <h2><span id="preview-class-name">Class Preview</span></h2>
+            </div>
+
+            <div class="editor-actions">
+              <!-- AI Model Selector -->
+              <div class="model-select-container" title="Select Claude model for generation">
+                <span class="model-icon">🤖</span>
+                <select id="model-select" class="model-select" onchange="onModelChange()">
+                  <option value="claude-opus-5">Claude Opus 5</option>
+                  <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                </select>
+                <span id="model-pill-tag" class="model-pill-tag">Claude Opus 5</span>
+              </div>
+
               <button id="btn-fls-check" class="btn btn-fls" onclick="checkFLS()" disabled title="Analyze Field-Level Security for all objects this class touches">
                 🔐 Check FLS
               </button>
-              <button id="btn-generate" class="btn btn-accent" onclick="runHarness()" disabled>
+              <button id="btn-generate" class="btn btn-accent btn-generate" onclick="runHarness()" disabled>
                 🧠 Generate Test
               </button>
             </div>
           </div>
+
           <!-- Class Character & Line Metrics Bar -->
           <div id="preview-stats-bar" class="preview-stats-bar">
             <span class="stat-pill" id="preview-chars-blanks" title="Characters including all spaces, tabs, and newlines">
@@ -95,6 +132,7 @@
               <span class="pill-label">Lines:</span> <strong class="pill-val">0</strong>
             </span>
           </div>
+
           <div class="code-container">
             <pre id="code-preview" class="code-block"><code>Select a class to preview...</code></pre>
           </div>
@@ -113,8 +151,11 @@
         </div>
       </section>
 
-      <!-- Right Panel: Live Activity + Results -->
-      <section class="panel panel-right">
+      <!-- ─── Resizer 2 (Right Splitter) ───────────────────── -->
+      <div id="resizer-right" class="pane-resizer" title="Drag to resize activity panel"></div>
+
+      <!-- ─── Column 3: Live Pipeline Activity + Results ───── -->
+      <section id="studio-results" class="panel studio-results">
 
         <!-- Live Activity Panel -->
         <div id="progress-section" class="progress-section" style="display:none;">
@@ -310,6 +351,141 @@
     </div>
   </div>
 
+  <!-- ─── Connect to Salesforce Modal ───────────────────────── -->
+  <div id="connect-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this) closeConnectModal()">
+    <div class="modal-dialog modal-auth">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h2>⚡ Connect to Salesforce Org</h2>
+          <span class="badge">Multi-Auth</span>
+        </div>
+        <button class="modal-close" onclick="closeConnectModal()">✕</button>
+      </div>
+
+      <div class="modal-body auth-modal-body">
+        <!-- Auth Tabs -->
+        <div class="auth-tabs">
+          <button class="auth-tab-btn active" data-tab="tab-userpass" onclick="switchAuthTab('tab-userpass')">
+            👤 Username & Password
+          </button>
+          <button class="auth-tab-btn" data-tab="tab-token" onclick="switchAuthTab('tab-token')">
+            🎟️ Access Token / Session
+          </button>
+          <button class="auth-tab-btn" data-tab="tab-oauth" onclick="switchAuthTab('tab-oauth')">
+            🌐 Web OAuth 2.0
+          </button>
+          <button class="auth-tab-btn" data-tab="tab-cli" onclick="switchAuthTab('tab-cli')">
+            💻 Salesforce CLI
+          </button>
+        </div>
+
+        <!-- Tab 1: Username & Password -->
+        <div id="tab-userpass" class="auth-tab-content active">
+          <form id="form-userpass" onsubmit="handleUserPassLogin(event)">
+            <p class="auth-helper-text">Connect directly using your Salesforce login credentials (works across any browser without CLI or OAuth redirects).</p>
+            
+            <div class="form-group">
+              <label for="sf-env-select">Environment / Login Endpoint</label>
+              <select id="sf-env-select" class="form-control">
+                <option value="https://login.salesforce.com">Production / Developer Edition (login.salesforce.com)</option>
+                <option value="https://test.salesforce.com">Sandbox (test.salesforce.com)</option>
+                <option value="custom">Custom My Domain URL...</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="custom-domain-group" style="display:none;">
+              <label for="sf-custom-domain">Custom Login URL</label>
+              <input type="url" id="sf-custom-domain" class="form-control" placeholder="https://mycompany.my.salesforce.com">
+            </div>
+
+            <div class="form-group">
+              <label for="sf-username">Salesforce Username (Email)</label>
+              <input type="text" id="sf-username" class="form-control" placeholder="admin@mycompany.com" required autocomplete="username">
+            </div>
+
+            <div class="form-group">
+              <label for="sf-password">Password</label>
+              <input type="password" id="sf-password" class="form-control" placeholder="••••••••" required autocomplete="current-password">
+            </div>
+
+            <div class="form-group">
+              <label for="sf-token">
+                Security Token <span class="form-optional">(Optional if IP is Trusted)</span>
+              </label>
+              <input type="password" id="sf-token" class="form-control" placeholder="Paste Security Token if required by org">
+              <small class="form-hint">Get via Salesforce: Profile Settings → Reset My Security Token</small>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" id="btn-login-userpass" class="btn btn-accent btn-block">
+                ⚡ Connect Org
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Tab 2: Direct Access Token / Session ID -->
+        <div id="tab-token" class="auth-tab-content">
+          <form id="form-token" onsubmit="handleTokenLogin(event)">
+            <p class="auth-helper-text">Paste an active session ID (from browser cookies, DevTools, or CLI) and instance URL.</p>
+
+            <div class="form-group">
+              <label for="sf-instance-url">Salesforce Instance URL</label>
+              <input type="url" id="sf-instance-url" class="form-control" placeholder="https://mycompany.my.salesforce.com" required>
+            </div>
+
+            <div class="form-group">
+              <label for="sf-access-token">Access Token / Session ID</label>
+              <textarea id="sf-access-token" class="form-control" rows="3" placeholder="00D8000000xxxxx!AQcAQ..." required></textarea>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" id="btn-login-token" class="btn btn-accent btn-block">
+                ⚡ Connect with Session Token
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Tab 3: OAuth Web Login -->
+        <div id="tab-oauth" class="auth-tab-content">
+          <div class="oauth-tab-box">
+            <p class="auth-helper-text">Redirect to Salesforce's official OAuth authorization page and return with an authorized session.</p>
+            <div class="oauth-badge-info">
+              <span>🔒 PKCE Secured</span>
+              <span>🔄 Auto-refresh tokens</span>
+            </div>
+            <button type="button" class="btn btn-accent btn-block" onclick="startOAuthLogin()">
+              🌐 Launch Salesforce OAuth Login
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 4: Salesforce CLI -->
+        <div id="tab-cli" class="auth-tab-content">
+          <div class="cli-tab-box">
+            <p class="auth-helper-text">Connect to any org currently authorized on this machine via the Salesforce CLI (`sf` / `sfdx`).</p>
+            
+            <div class="form-group">
+              <label for="modal-cli-select">Select Authenticated CLI Org</label>
+              <select id="modal-cli-select" class="form-control">
+                <option value="">Detecting CLI orgs...</option>
+              </select>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" id="btn-modal-cli-connect" class="btn btn-accent btn-block" onclick="connectViaModalCli()">
+                ⚡ Connect Selected CLI Org
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
+

@@ -76,12 +76,19 @@ async function listCliOrgs() {
 async function getCliOrgAuth(targetOrg) {
   const targetFlag = targetOrg ? `--target-org "${targetOrg}"` : '';
 
-  // 1. Get org metadata (instanceUrl, username, orgId)
-  const displayCmd = `sf org display ${targetFlag} --json`;
-  const displayOutput = await execCommand(displayCmd);
+  // 1. Try `sf org display --verbose --json` which includes accessToken
+  const displayCmd = `sf org display --verbose ${targetFlag} --json`;
+  let displayOutput = '';
+  try {
+    displayOutput = await execCommand(displayCmd);
+  } catch (e) {
+    // Fallback without --verbose
+    displayOutput = await execCommand(`sf org display ${targetFlag} --json`);
+  }
+
   const displayMatch = displayOutput.match(/\{[\s\S]*\}/);
   if (!displayMatch) {
-    throw new Error('Could not parse sf org display output');
+    throw new Error('Could not parse sf org display output: ' + displayOutput.slice(0, 200));
   }
 
   const displayData = JSON.parse(displayMatch[0]);
@@ -91,25 +98,66 @@ async function getCliOrgAuth(targetOrg) {
 
   const orgInfo = displayData.result;
 
-  // 2. Get the actual access token (sf org display redacts it in newer CLI versions)
-  const tokenCmd = `sf org auth show-access-token ${targetFlag} --json`;
-  const tokenOutput = await execCommand(tokenCmd);
-  const tokenMatch = tokenOutput.match(/\{[\s\S]*\}/);
-  if (!tokenMatch) {
-    throw new Error('Could not parse sf org auth show-access-token output');
+  // If accessToken is already provided by display command
+  if (orgInfo.accessToken) {
+    return {
+      accessToken: orgInfo.accessToken,
+      instanceUrl: orgInfo.instanceUrl,
+      username: orgInfo.username,
+      orgId: orgInfo.id || orgInfo.orgId,
+    };
   }
 
-  const tokenData = JSON.parse(tokenMatch[0]);
-  if (tokenData.status !== 0 || !tokenData.result || !tokenData.result.accessToken) {
-    throw new Error(tokenData.message || 'Failed to retrieve access token from sf CLI');
+  // 2. Fallback: try `sf org auth show-access-token` if display didn't include it
+  try {
+    const tokenCmd = `sf org auth show-access-token ${targetFlag} --json`;
+    const tokenOutput = await execCommand(tokenCmd);
+    const tokenMatch = tokenOutput.match(/\{[\s\S]*\}/);
+    if (tokenMatch) {
+      const tokenData = JSON.parse(tokenMatch[0]);
+      if (tokenData.result?.accessToken) {
+        return {
+          accessToken: tokenData.result.accessToken,
+          instanceUrl: orgInfo.instanceUrl,
+          username: orgInfo.username,
+          orgId: orgInfo.id || orgInfo.orgId,
+        };
+      }
+    }
+  } catch (err) {
+    // Continue to next fallback
   }
 
-  return {
-    accessToken: tokenData.result.accessToken,
-    instanceUrl: orgInfo.instanceUrl,
-    username: orgInfo.username,
-    orgId: orgInfo.id,
-  };
+  // 3. Fallback: Read local auth file (~/.sfdx/ or ~/.sf/)
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const username = orgInfo.username;
+
+  const candidatePaths = [
+    path.join(os.homedir(), '.sfdx', `${username}.json`),
+    path.join(os.homedir(), '.sf', `${username}.json`),
+  ];
+
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      try {
+        const fileContent = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (fileContent.accessToken) {
+          return {
+            accessToken: fileContent.accessToken,
+            instanceUrl: fileContent.instanceUrl || orgInfo.instanceUrl,
+            username: fileContent.username || username,
+            orgId: fileContent.orgId || orgInfo.id,
+          };
+        }
+      } catch (e) {
+        // Continue
+      }
+    }
+  }
+
+  throw new Error(`Could not find access token for org "${targetOrg || orgInfo.username}". Please try re-authenticating with: sf org login web`);
 }
 
 module.exports = {

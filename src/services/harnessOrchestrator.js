@@ -33,6 +33,7 @@ const PREFLIGHT_COMPILE_CHECK = process.env.PREFLIGHT_COMPILE_CHECK !== 'false';
 const MODEL_PRICING = {
   'claude-opus-5':             { input: 15.00, output: 75.00 },
   'claude-opus-4':             { input: 15.00, output: 75.00 },
+  'claude-sonnet-5':           { input: 4.00,  output: 20.00 },
   'claude-sonnet-4':           { input: 4.00,  output: 20.00 },
   'claude-3-7-sonnet':         { input: 3.00,  output: 15.00 },
   'claude-3-5-sonnet':         { input: 3.00,  output: 15.00 },
@@ -59,7 +60,7 @@ function calculateCost(tokens, model) {
     }
   }
   // Fallback: use sonnet pricing as default
-  if (!pricing) pricing = { input: 3.00, output: 15.00 };
+  if (!pricing) pricing = { input: 4.00, output: 20.00 };
 
   const inputCost = (tokens.input / 1_000_000) * pricing.input;
   const outputCost = (tokens.output / 1_000_000) * pricing.output;
@@ -78,11 +79,13 @@ function calculateCost(tokens, model) {
  * @param {jsforce.Connection} conn - Authenticated Salesforce connection
  * @param {string} className - Name of the Apex class to generate tests for
  * @param {function} onProgress - Callback for progress updates: (step, message, data) => void
+ * @param {object} [options] - Additional options (e.g. { model: 'claude-sonnet-5' })
  * @returns {Promise<object>} Final result with test outcomes and generated code
  */
-async function executeHarness(conn, className, onProgress = () => {}) {
+async function executeHarness(conn, className, onProgress = () => {}, options = {}) {
   const startTime = Date.now();
   const log = [];
+  const targetModel = options.model || process.env.CLAUDE_MODEL || 'claude-opus-5';
 
   function progress(step, message, data = {}) {
     const entry = { step, message, data, timestamp: Date.now() };
@@ -208,17 +211,11 @@ async function executeHarness(conn, className, onProgress = () => {}) {
     let previousAttempt = null;
     let finalTestClassBody = null;
     let finalTestClassName = null;
-<<<<<<< Updated upstream
-    let totalTokensUsed = { input: 0, output: 0 };
-    let totalCharsUsed = { input: 0, output: 0 };
-    let usedModel = null;
-=======
     let totalTokensUsed = { input: 0, output: 0, total: 0 };
     let totalCostUSD = 0;
     let totalPromptCharsWithBlanks = 0;
     let totalGeneratedCharsWithBlanks = 0;
     const attemptsUsage = [];
->>>>>>> Stashed changes
 
     // Error history — accumulates ALL errors across ALL attempts
     const errorHistory = [];
@@ -236,6 +233,7 @@ async function executeHarness(conn, className, onProgress = () => {}) {
         dependencyReport,
         previousAttempt,
         {
+          model: targetModel,
           existingTestBody: attempt === 0 ? (existingTest.testClassBody || null) : null,
           errorHistory: isRetry ? errorHistory : [],
         }
@@ -244,24 +242,12 @@ async function executeHarness(conn, className, onProgress = () => {}) {
 
       finalTestClassName = generated.testClassName;
       finalTestClassBody = generated.testClassBody;
-<<<<<<< Updated upstream
-      totalTokensUsed.input += generated.tokensUsed.input;
-      totalTokensUsed.output += generated.tokensUsed.output;
-      if (generated.charsUsed) {
-        totalCharsUsed.input += generated.charsUsed.input;
-        totalCharsUsed.output += generated.charsUsed.output;
-      }
-      if (generated.model) usedModel = generated.model;
-
-      const stepCost = calculateCost(generated.tokensUsed, usedModel);
-=======
       
       const inTokens = generated.tokensUsed.input || 0;
       const outTokens = generated.tokensUsed.output || 0;
       const costUSD = generated.cost?.totalCostUSD || 0;
       const inChars = generated.characterMetrics?.input?.withBlanks || 0;
       const outChars = generated.characterMetrics?.output?.withBlanks || finalTestClassBody.length;
->>>>>>> Stashed changes
 
       totalTokensUsed.input += inTokens;
       totalTokensUsed.output += outTokens;
@@ -284,15 +270,10 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       progress('generate', `${label}: Test class generated (${outChars} chars w/ blanks, ${inTokens + outTokens} tokens, Cost: ${generated.cost?.formattedCost || '$0.00'})`, {
         testClassName: finalTestClassName,
         tokensUsed: generated.tokensUsed,
-<<<<<<< Updated upstream
-        charsUsed: generated.charsUsed || {},
-        estimatedCost: stepCost,
-=======
         cost: generated.cost,
         characterMetrics: generated.characterMetrics,
         attempt: attempt + 1,
         totalCumulativeCost: `$${totalCostUSD.toFixed(4)}`,
->>>>>>> Stashed changes
       });
 
       // ── Deploy ────────────────────────────────────────
@@ -452,11 +433,6 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           formattedCost: `$${totalCostUSD.toFixed(4)}`,
         });
 
-<<<<<<< Updated upstream
-        const totalCost = calculateCost(totalTokensUsed, usedModel);
-
-        return {
-=======
         const aiUsage = {
           model: attemptsUsage[0]?.model || process.env.CLAUDE_MODEL || 'claude-3-7-sonnet',
           totalInputTokens: totalTokensUsed.input,
@@ -484,7 +460,6 @@ async function executeHarness(conn, className, onProgress = () => {}) {
         };
 
         const resultPayload = {
->>>>>>> Stashed changes
           success: true,
           className,
           testClassName: finalTestClassName,
@@ -497,12 +472,7 @@ async function executeHarness(conn, className, onProgress = () => {}) {
           dependencyReport,
           attempts: attempt + 1,
           totalTokensUsed,
-<<<<<<< Updated upstream
-          totalCharsUsed,
-          estimatedCost: totalCost,
-=======
           aiUsage,
->>>>>>> Stashed changes
           duration: Date.now() - startTime,
           log,
         };
@@ -551,11 +521,6 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       lastResults: lastResult?.results || [],
     });
 
-<<<<<<< Updated upstream
-    const totalCost = calculateCost(totalTokensUsed, usedModel);
-
-    return {
-=======
     const aiUsageFailed = {
       model: attemptsUsage[0]?.model || process.env.CLAUDE_MODEL || 'claude-3-7-sonnet',
       totalInputTokens: totalTokensUsed.input,
@@ -583,7 +548,6 @@ async function executeHarness(conn, className, onProgress = () => {}) {
     };
 
     const failedPayload = {
->>>>>>> Stashed changes
       success: false,
       className,
       testClassName: finalTestClassName,
@@ -593,12 +557,7 @@ async function executeHarness(conn, className, onProgress = () => {}) {
       dependencyReport,
       attempts: MAX_FIX_RETRIES + 1,
       totalTokensUsed,
-<<<<<<< Updated upstream
-      totalCharsUsed,
-      estimatedCost: totalCost,
-=======
       aiUsage: aiUsageFailed,
->>>>>>> Stashed changes
       duration: Date.now() - startTime,
       log,
     };

@@ -280,6 +280,7 @@ function formatErrorHistory(errorHistory) {
 async function generateTestClass(apexClassBody, className, dependencyReport, previousAttempt = null, options = {}) {
   const client = getClient();
   const testClassName = `${className}Test`;
+  const selectedModel = options.model || CLAUDE_MODEL;
   const { existingTestBody, errorHistory } = options;
 
   let userMessage = '';
@@ -367,10 +368,10 @@ Fix the exact line / syntax / variable mismatch. Ensure the test class is concis
 Return ONLY the raw fixed Apex code.`;
   }
 
-  console.log(`[ClaudeService] Calling Claude (${CLAUDE_MODEL}) to ${previousAttempt ? 'fix' : 'generate'} test class...`);
+  console.log(`[ClaudeService] Calling Claude (${selectedModel}) to ${previousAttempt ? 'fix' : 'generate'} test class...`);
 
   const response = await client.messages.stream({
-    model: CLAUDE_MODEL,
+    model: selectedModel,
     max_tokens: MAX_TOKENS,
     system: buildSystemPrompt(),
     messages: [{ role: 'user', content: userMessage }],
@@ -397,20 +398,12 @@ Return ONLY the raw fixed Apex code.`;
 
   const inputTokens = response.usage?.input_tokens || 0;
   const outputTokens = response.usage?.output_tokens || 0;
-<<<<<<< Updated upstream
+  const cost = calculateClaudeCost(selectedModel, inputTokens, outputTokens);
   const cacheCreationTokens = response.usage?.cache_creation_input_tokens || 0;
   const cacheReadTokens = response.usage?.cache_read_input_tokens || 0;
 
-  // Character counts: input prompt length + output body length
-  const inputChars = userMessage.length + buildSystemPrompt().length;
-  const outputChars = testClassBody.length;
-
-  console.log(`[ClaudeService] Received test class (${testClassBody.length} chars, stop_reason: ${response.stop_reason}, tokens: ${inputTokens}in/${outputTokens}out)`);
-=======
-  const cost = calculateClaudeCost(CLAUDE_MODEL, inputTokens, outputTokens);
-
-  const inputCharsWithBlanks = userMessage.length;
-  const inputCharsWithoutBlanks = userMessage.replace(/\s/g, '').length;
+  const inputCharsWithBlanks = userMessage.length + buildSystemPrompt().length;
+  const inputCharsWithoutBlanks = userMessage.replace(/\s/g, '').length + buildSystemPrompt().replace(/\s/g, '').length;
   const inputWhitespaceChars = inputCharsWithBlanks - inputCharsWithoutBlanks;
 
   const outputCharsWithBlanks = testClassBody.length;
@@ -418,27 +411,19 @@ Return ONLY the raw fixed Apex code.`;
   const outputWhitespaceChars = outputCharsWithBlanks - outputCharsWithoutBlanks;
 
   console.log(
-    `[ClaudeService] Received test class (${outputCharsWithBlanks} chars w/ blanks, ${inputTokens + outputTokens} tokens, Cost: ${cost.formattedCost})`
+    `[ClaudeService] Received test class (${outputCharsWithBlanks} chars, ${inputTokens + outputTokens} tokens, Cost: ${cost.formattedCost})`
   );
->>>>>>> Stashed changes
 
   return {
     testClassName,
     testClassBody,
-    model: CLAUDE_MODEL,
+    model: selectedModel,
     tokensUsed: {
       input: inputTokens,
       output: outputTokens,
-<<<<<<< Updated upstream
+      total: inputTokens + outputTokens,
       cacheCreation: cacheCreationTokens,
       cacheRead: cacheReadTokens,
-    },
-    charsUsed: {
-      input: inputChars,
-      output: outputChars,
-=======
-      total: inputTokens + outputTokens,
->>>>>>> Stashed changes
     },
     cost,
     characterMetrics: {
@@ -457,8 +442,31 @@ Return ONLY the raw fixed Apex code.`;
   };
 }
 
+const AVAILABLE_MODELS = [
+  {
+    id: 'claude-opus-5',
+    name: 'Claude Opus 5',
+    description: 'Anthropic flagship reasoning & complex Apex logic',
+    tag: 'Claude Opus 5',
+    inputRate: 15.00,
+    outputRate: 75.00,
+  },
+  {
+    id: 'claude-sonnet-5',
+    name: 'Claude Sonnet 5',
+    description: 'Next-gen high speed & advanced code generation',
+    tag: 'Claude Sonnet 5',
+    inputRate: 4.00,
+    outputRate: 20.00,
+  },
+];
+
 const MODEL_RATES = {
   // Rates per 1,000,000 tokens (USD)
+  'claude-opus-5': { input: 15.00, output: 75.00 },
+  'claude-opus-4': { input: 15.00, output: 75.00 },
+  'claude-sonnet-5': { input: 4.00, output: 20.00 },
+  'claude-sonnet-4': { input: 4.00, output: 20.00 },
   'claude-3-7-sonnet': { input: 3.00, output: 15.00 },
   'claude-3-5-sonnet': { input: 3.00, output: 15.00 },
   'claude-3-sonnet': { input: 3.00, output: 15.00 },
@@ -474,7 +482,7 @@ function getModelRates(modelName = CLAUDE_MODEL) {
       return { ...rates, matchedModel: key };
     }
   }
-  return { input: 3.00, output: 15.00, matchedModel: 'claude-3-7-sonnet' };
+  return { input: 4.00, output: 20.00, matchedModel: modelName || 'claude-sonnet-5' };
 }
 
 function calculateClaudeCost(modelName, inputTokens, outputTokens) {
@@ -500,5 +508,8 @@ module.exports = {
   generateTestClass,
   calculateClaudeCost,
   getModelRates,
+  AVAILABLE_MODELS,
+  CLAUDE_MODEL,
 };
+
 

@@ -89,13 +89,26 @@ router.get('/classes/:name', requireAuth, async (req, res) => {
   }
 });
 
+const { AVAILABLE_MODELS, CLAUDE_MODEL } = require('../services/claudeService');
+
+/**
+ * GET /api/models
+ * Get the list of selectable AI models and current default model.
+ */
+router.get('/models', (req, res) => {
+  res.json({
+    defaultModel: process.env.CLAUDE_MODEL || CLAUDE_MODEL || 'claude-opus-5',
+    models: AVAILABLE_MODELS,
+  });
+});
+
 /**
  * POST /api/harness/run
  * Execute the full harness pipeline for a given class.
- * Body: { className: "MyApexClass" }
+ * Body: { className: "MyApexClass", model: "claude-sonnet-5" }
  */
 router.post('/harness/run', requireAuth, async (req, res) => {
-  const { className } = req.body;
+  const { className, model } = req.body;
 
   if (!className) {
     return res.status(400).json({ error: 'Missing className in request body' });
@@ -103,27 +116,34 @@ router.post('/harness/run', requireAuth, async (req, res) => {
 
   const conn = await salesforceAuth.getConnection(req.session);
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const selectedModel = model || process.env.CLAUDE_MODEL || CLAUDE_MODEL || 'claude-opus-5';
 
   // Initialize job tracking
   activeJobs.set(jobId, {
     status: 'running',
     className,
+    model: selectedModel,
     progress: [],
     result: null,
     startTime: Date.now(),
   });
 
   // Start the harness asynchronously
-  res.json({ jobId, message: `Harness started for ${className}` });
+  res.json({ jobId, message: `Harness started for ${className} using ${selectedModel}` });
 
   // Execute in background
   try {
-    const result = await executeHarness(conn, className, (step, message, data) => {
-      const job = activeJobs.get(jobId);
-      if (job) {
-        job.progress.push({ step, message, data, timestamp: Date.now() });
-      }
-    });
+    const result = await executeHarness(
+      conn,
+      className,
+      (step, message, data) => {
+        const job = activeJobs.get(jobId);
+        if (job) {
+          job.progress.push({ step, message, data, timestamp: Date.now() });
+        }
+      },
+      { model: selectedModel }
+    );
 
     const job = activeJobs.get(jobId);
     if (job) {
@@ -196,7 +216,7 @@ router.post('/fls/check', requireAuth, async (req, res) => {
   }
 
   try {
-    const conn = salesforceAuth.getConnection(req.session);
+    const conn = await salesforceAuth.getConnection(req.session);
     const apexClassService = require('../services/apexClassService');
     const dependencyAnalyzer = require('../services/dependencyAnalyzer');
 

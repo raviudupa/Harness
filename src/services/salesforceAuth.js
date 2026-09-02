@@ -158,13 +158,92 @@ function isAuthenticated(session) {
   return !!(session && session.sf && session.sf.accessToken);
 }
 
+/**
+ * Log in to Salesforce using Username + Password + Security Token (OAuth 2.0 Resource Owner Password Credentials).
+ * @param {object} params
+ * @param {string} params.username - Salesforce username/email
+ * @param {string} params.password - Salesforce password
+ * @param {string} [params.securityToken] - Salesforce security token (optional if IP is trusted)
+ * @param {string} [params.loginUrl] - Login URL (default: https://login.salesforce.com or https://test.salesforce.com)
+ * @returns {Promise<object>} Token info: { accessToken, instanceUrl, userId, orgId }
+ */
+async function loginWithPassword({ username, password, securityToken = '', loginUrl = SF_LOGIN_URL }) {
+  if (!username || !password) {
+    throw new Error('Username and password are required');
+  }
+
+  const endpoint = `${loginUrl.replace(/\/+$/, '')}/services/oauth2/token`;
+  const fullPassword = password + (securityToken || '');
+
+  const params = new URLSearchParams({
+    grant_type: 'password',
+    client_id: SF_CLIENT_ID,
+    client_secret: SF_CLIENT_SECRET,
+    username,
+    password: fullPassword,
+  });
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || data.error) {
+    throw new Error(data.error_description || data.error || 'Salesforce Username/Password login failed');
+  }
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: null,
+    instanceUrl: data.instance_url,
+    userId: data.id ? data.id.split('/').pop() : username,
+    orgId: data.id ? data.id.split('/')[4] : null,
+  };
+}
+
+/**
+ * Connect directly using an existing Access Token / Session ID and Instance URL.
+ * Validates connection against Salesforce.
+ * @param {object} params
+ * @param {string} params.accessToken - Valid Salesforce session ID / bearer token
+ * @param {string} params.instanceUrl - Instance URL (e.g. https://mycompany.my.salesforce.com)
+ * @returns {Promise<object>}
+ */
+async function loginWithAccessToken({ accessToken, instanceUrl }) {
+  if (!accessToken || !instanceUrl) {
+    throw new Error('Access token and instance URL are required');
+  }
+
+  const cleanedUrl = instanceUrl.replace(/\/+$/, '');
+  
+  // Verify token works by querying limits or user info
+  const testConn = createConnection(accessToken, null, cleanedUrl);
+  const identity = await testConn.identity().catch((err) => {
+    throw new Error(`Invalid access token or instance URL: ${err.message}`);
+  });
+
+  return {
+    accessToken,
+    refreshToken: null,
+    instanceUrl: cleanedUrl,
+    userId: identity?.username || identity?.user_id || 'Direct Token User',
+    orgId: identity?.organization_id || null,
+  };
+}
+
 module.exports = {
   generatePKCE,
   getAuthorizationUrl,
   handleCallback,
+  loginWithPassword,
+  loginWithAccessToken,
   getConnection,
   refreshCliToken,
   storeTokensInSession,
   clearSession,
   isAuthenticated,
 };
+

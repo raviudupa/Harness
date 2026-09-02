@@ -107,6 +107,48 @@ router.post('/cli/connect', async (req, res) => {
 });
 
 /**
+ * POST /api/auth/login/password
+ * Connect using Salesforce Username + Password + Security Token
+ * Body: { username, password, securityToken, loginUrl }
+ */
+router.post('/login/password', async (req, res) => {
+  const { username, password, securityToken, loginUrl } = req.body;
+  try {
+    const tokenInfo = await salesforceAuth.loginWithPassword({
+      username,
+      password,
+      securityToken,
+      loginUrl,
+    });
+    salesforceAuth.storeTokensInSession(req.session, tokenInfo);
+    res.json({ success: true, orgInfo: tokenInfo });
+  } catch (err) {
+    console.error('[Auth] Password login error:', err.message);
+    res.status(401).json({ error: 'Username/Password authentication failed', details: err.message });
+  }
+});
+
+/**
+ * POST /api/auth/login/token
+ * Connect directly using an Access Token (Session ID) + Instance URL
+ * Body: { accessToken, instanceUrl }
+ */
+router.post('/login/token', async (req, res) => {
+  const { accessToken, instanceUrl } = req.body;
+  try {
+    const tokenInfo = await salesforceAuth.loginWithAccessToken({
+      accessToken,
+      instanceUrl,
+    });
+    salesforceAuth.storeTokensInSession(req.session, tokenInfo);
+    res.json({ success: true, orgInfo: tokenInfo });
+  } catch (err) {
+    console.error('[Auth] Token login error:', err.message);
+    res.status(401).json({ error: 'Direct token authentication failed', details: err.message });
+  }
+});
+
+/**
  * POST /api/auth/logout
  * Clear Salesforce session and log out.
  */
@@ -116,3 +158,4 @@ router.post('/logout', (req, res) => {
 });
 
 module.exports = router;
+

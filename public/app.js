@@ -12,11 +12,57 @@ let timerInterval = null;
 let timerStart = 0;
 let lastProgressIndex = 0;
 
+// ─── Material UI Theme Management (Dark / Light) ───────────
+function initTheme() {
+  const savedTheme = localStorage.getItem('apex_harness_theme');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const initialTheme = savedTheme || (prefersDark ? 'dark' : 'dark');
+  setTheme(initialTheme, false);
+}
+
+function setTheme(theme, notify = false) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('apex_harness_theme', theme);
+
+  const btn = document.getElementById('btn-theme-toggle');
+  const label = document.getElementById('theme-toggle-text');
+  if (btn) {
+    btn.setAttribute('data-theme-active', theme);
+    btn.title = theme === 'dark' ? 'Switch to Light Mode (Ctrl+Shift+T)' : 'Switch to Dark Mode (Ctrl+Shift+T)';
+  }
+  if (label) {
+    label.textContent = theme === 'dark' ? 'Dark' : 'Light';
+  }
+  if (notify) {
+    showToast(`Switched to ${theme === 'dark' ? 'Dark' : 'Light'} Mode`, 'info');
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  setTheme(next, true);
+}
+
+// Immediate theme execution to prevent any flash of unstyled theme
+initTheme();
+
 // ─── Init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
   checkAuthStatus();
   loadCliOrgs();
   loadAuditCount();
+  loadAvailableModels();
+  initPaneResizers();
+
+  // Keyboard shortcut Ctrl+Shift+T or Alt+T for theme toggle
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') || (e.altKey && e.key.toLowerCase() === 't')) {
+      e.preventDefault();
+      toggleTheme();
+    }
+  });
 
   // Check for OAuth callback result
   const params = new URLSearchParams(window.location.search);
@@ -30,42 +76,199 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// ─── Antigravity Resizable Splitter Handles ──────────────
+function initPaneResizers() {
+  const sidebar = document.getElementById('studio-sidebar');
+  const results = document.getElementById('studio-results');
+  const resizerLeft = document.getElementById('resizer-left');
+  const resizerRight = document.getElementById('resizer-right');
+
+  // Restore saved widths from localStorage
+  const savedLeft = localStorage.getItem('studio_sidebar_width');
+  if (savedLeft && sidebar) sidebar.style.width = savedLeft + 'px';
+  const savedRight = localStorage.getItem('studio_results_width');
+  if (savedRight && results) results.style.width = savedRight + 'px';
+
+  // Left resizer (Sidebar)
+  if (resizerLeft && sidebar) {
+    let isDraggingLeft = false;
+    resizerLeft.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      isDraggingLeft = true;
+      resizerLeft.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const onMouseMove = (moveEvent) => {
+        if (!isDraggingLeft) return;
+        const newWidth = Math.max(160, Math.min(520, moveEvent.clientX));
+        sidebar.style.width = newWidth + 'px';
+        localStorage.setItem('studio_sidebar_width', newWidth);
+      };
+
+      const onMouseUp = () => {
+        isDraggingLeft = false;
+        resizerLeft.classList.remove('resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+  }
+
+  // Right resizer (Results Panel)
+  if (resizerRight && results) {
+    let isDraggingRight = false;
+    resizerRight.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      isDraggingRight = true;
+      resizerRight.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const onMouseMove = (moveEvent) => {
+        if (!isDraggingRight) return;
+        const containerWidth = window.innerWidth;
+        const newWidth = Math.max(280, Math.min(850, containerWidth - moveEvent.clientX));
+        results.style.width = newWidth + 'px';
+        localStorage.setItem('studio_results_width', newWidth);
+      };
+
+      const onMouseUp = () => {
+        isDraggingRight = false;
+        resizerRight.classList.remove('resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+  }
+}
+
+// ─── AI Model Selector Handling ───────────────────────────
+let availableModelsList = [];
+
+async function loadAvailableModels() {
+  const select = document.getElementById('model-select');
+  if (!select) return;
+
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    const models = data.models || [];
+    const serverDefault = data.defaultModel || 'claude-opus-5';
+    availableModelsList = models;
+
+    // Load saved model from localStorage or use server default
+    const savedModel = localStorage.getItem('selected_ai_model') || serverDefault;
+
+    if (models.length > 0) {
+      select.innerHTML = models.map((m) => {
+        const isSelected = m.id === savedModel;
+        const tagText = m.id === serverDefault ? ' (Server Default)' : '';
+        return `<option value="${m.id}" ${isSelected ? 'selected' : ''} title="${m.description} - In: $${m.inputRate}/M, Out: $${m.outputRate}/M">${m.name}${tagText}</option>`;
+      }).join('');
+    }
+
+    updateModelPill(savedModel);
+  } catch (err) {
+    console.warn('Failed to load dynamic models list:', err);
+  }
+}
+
+function onModelChange() {
+  const select = document.getElementById('model-select');
+  if (!select) return;
+  const val = select.value;
+  localStorage.setItem('selected_ai_model', val);
+  updateModelPill(val);
+  showToast(`Active AI Model: ${select.options[select.selectedIndex]?.text || val}`, 'info');
+}
+
+function updateModelPill(modelId) {
+  const pill = document.getElementById('model-pill-tag');
+  if (!pill) return;
+  const lower = (modelId || '').toLowerCase();
+  if (lower.includes('opus')) {
+    pill.textContent = 'Claude Opus 5';
+  } else if (lower.includes('sonnet')) {
+    pill.textContent = 'Claude Sonnet 5';
+  } else {
+    pill.textContent = modelId;
+  }
+}
+
+function getSelectedModel() {
+  const select = document.getElementById('model-select');
+  return select ? select.value : (localStorage.getItem('selected_ai_model') || 'claude-opus-5');
+}
+
 // ─── SF CLI Integration ──────────────────────────────────
 async function loadCliOrgs() {
   const select = document.getElementById('cli-org-select');
+  const modalSelect = document.getElementById('modal-cli-select');
   try {
     const res = await fetch('/api/auth/cli/orgs');
     const data = await res.json();
     const orgs = data.orgs || [];
 
     if (orgs.length === 0) {
-      select.innerHTML = '<option value="">No CLI orgs found</option>';
+      if (select) select.innerHTML = '<option value="">No CLI orgs found</option>';
+      if (modalSelect) modalSelect.innerHTML = '<option value="">No CLI orgs found</option>';
       return;
     }
 
-    select.innerHTML = orgs.map((org) => {
+    const optionsHtml = orgs.map((org) => {
       const label = org.alias !== org.username ? `${org.alias} (${org.username})` : org.username;
       const defaultTag = org.isDefault ? ' ⭐ [Default]' : '';
       return `<option value="${org.alias || org.username}" ${org.isDefault ? 'selected' : ''}>${label}${defaultTag}</option>`;
     }).join('');
+
+    if (select) select.innerHTML = optionsHtml;
+    if (modalSelect) modalSelect.innerHTML = optionsHtml;
   } catch (err) {
-    select.innerHTML = '<option value="">Failed to detect CLI orgs</option>';
+    if (select) select.innerHTML = '<option value="">Failed to detect CLI orgs</option>';
+    if (modalSelect) modalSelect.innerHTML = '<option value="">Failed to detect CLI orgs</option>';
     console.error('Failed to load CLI orgs:', err);
   }
 }
 
 async function connectViaCli() {
   const select = document.getElementById('cli-org-select');
-  const targetOrg = select.value;
+  const targetOrg = select ? select.value : '';
   const btn = document.getElementById('btn-cli-connect');
+  await executeCliConnect(targetOrg, btn);
+}
 
+async function connectViaModalCli() {
+  const select = document.getElementById('modal-cli-select');
+  const targetOrg = select ? select.value : '';
+  const btn = document.getElementById('btn-modal-cli-connect');
+  const success = await executeCliConnect(targetOrg, btn);
+  if (success) {
+    closeConnectModal();
+  }
+}
+
+async function executeCliConnect(targetOrg, btnElement) {
   if (!targetOrg) {
     showToast('Please select a Salesforce CLI org', 'error');
-    return;
+    return false;
   }
 
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Connecting...';
+  const originalText = btnElement ? btnElement.innerHTML : '⚡ Connect';
+  if (btnElement) {
+    btnElement.disabled = true;
+    btnElement.innerHTML = '<span class="spinner"></span> Connecting...';
+  }
 
   try {
     const res = await fetch('/api/auth/cli/connect', {
@@ -78,18 +281,150 @@ async function connectViaCli() {
     if (data.success) {
       showToast(`Connected to ${targetOrg}!`, 'success');
       await checkAuthStatus();
+      return true;
     } else {
       showToast('Failed to connect: ' + (data.error || 'Unknown error'), 'error');
+      return false;
     }
   } catch (err) {
     showToast('Error connecting via CLI: ' + err.message, 'error');
+    return false;
+  } finally {
+    if (btnElement) {
+      btnElement.disabled = false;
+      btnElement.innerHTML = originalText;
+    }
+  }
+}
+
+// ─── Multi-Auth Modal Handlers ────────────────────────────
+function openConnectModal() {
+  const modal = document.getElementById('connect-modal');
+  if (modal) {
+    modal.style.display = 'flex';
+    loadCliOrgs();
+  }
+}
+
+function closeConnectModal() {
+  const modal = document.getElementById('connect-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function switchAuthTab(tabId) {
+  document.querySelectorAll('.auth-tab-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
+  });
+  document.querySelectorAll('.auth-tab-content').forEach((content) => {
+    content.classList.toggle('active', content.id === tabId);
+  });
+}
+
+// Custom domain toggle in User/Pass tab
+document.addEventListener('DOMContentLoaded', () => {
+  const envSelect = document.getElementById('sf-env-select');
+  const customDomainGroup = document.getElementById('custom-domain-group');
+  if (envSelect && customDomainGroup) {
+    envSelect.addEventListener('change', () => {
+      customDomainGroup.style.display = envSelect.value === 'custom' ? 'block' : 'none';
+    });
+  }
+});
+
+async function handleUserPassLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('btn-login-userpass');
+  const envSelect = document.getElementById('sf-env-select');
+  const customDomainInput = document.getElementById('sf-custom-domain');
+  const username = document.getElementById('sf-username').value.trim();
+  const password = document.getElementById('sf-password').value;
+  const securityToken = document.getElementById('sf-token').value.trim();
+
+  let loginUrl = envSelect.value;
+  if (loginUrl === 'custom') {
+    loginUrl = (customDomainInput.value || '').trim();
+    if (!loginUrl) {
+      showToast('Please enter your custom My Domain URL', 'error');
+      return;
+    }
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Authenticating with Salesforce...';
+
+  try {
+    const res = await fetch('/api/auth/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, securityToken, loginUrl }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showToast(`Connected to Salesforce as ${data.orgInfo.userId}!`, 'success');
+      closeConnectModal();
+      document.getElementById('sf-password').value = '';
+      document.getElementById('sf-token').value = '';
+      await checkAuthStatus();
+    } else {
+      showToast(data.details || data.error || 'Authentication failed', 'error');
+    }
+  } catch (err) {
+    showToast('Network error during login: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '⚡ Connect Org';
   }
 }
 
-// ─── Authentication ───────────────────────────────────────
+async function handleTokenLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('btn-login-token');
+  const instanceUrl = document.getElementById('sf-instance-url').value.trim();
+  const accessToken = document.getElementById('sf-access-token').value.trim();
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Validating session...';
+
+  try {
+    const res = await fetch('/api/auth/login/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instanceUrl, accessToken }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showToast(`Connected successfully to ${instanceUrl}!`, 'success');
+      closeConnectModal();
+      document.getElementById('sf-access-token').value = '';
+      await checkAuthStatus();
+    } else {
+      showToast(data.details || data.error || 'Invalid session token', 'error');
+    }
+  } catch (err) {
+    showToast('Network error: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '⚡ Connect with Session Token';
+  }
+}
+
+async function startOAuthLogin() {
+  try {
+    const res = await fetch('/api/auth/login');
+    const data = await res.json();
+    if (data.authUrl) {
+      window.location.href = data.authUrl;
+    } else {
+      showToast('Failed to start OAuth login', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to start OAuth: ' + err.message, 'error');
+  }
+}
+
+// ─── Authentication Status & Actions ──────────────────────
 async function checkAuthStatus() {
   try {
     const res = await fetch('/api/auth/status');
@@ -105,12 +440,12 @@ async function checkAuthStatus() {
       statusEl.querySelector('.status-text').textContent = `Connected: ${orgDisplay}`;
       btnAuth.textContent = 'Disconnect';
       btnAuth.className = 'btn btn-danger';
-      if (cliContainer) cliContainer.style.opacity = '0.5';
+      if (cliContainer) cliContainer.style.opacity = '0.7';
       loadClasses();
     } else {
       statusEl.className = 'auth-status disconnected';
       statusEl.querySelector('.status-text').textContent = 'Disconnected';
-      btnAuth.textContent = 'OAuth Login';
+      btnAuth.textContent = '🔑 Connect Org';
       btnAuth.className = 'btn btn-secondary';
       if (cliContainer) cliContainer.style.opacity = '1';
     }
@@ -130,16 +465,11 @@ async function handleAuth() {
     checkAuthStatus();
     resetUI();
   } else {
-    // Login
-    try {
-      const res = await fetch('/api/auth/login');
-      const data = await res.json();
-      window.location.href = data.authUrl;
-    } catch (err) {
-      showToast('Failed to start login: ' + err.message, 'error');
-    }
+    // Open the Multi-Auth Connection Modal
+    openConnectModal();
   }
 }
+
 
 function resetUI() {
   allClasses = [];
@@ -148,6 +478,8 @@ function resetUI() {
   document.getElementById('class-list-empty').style.display = 'flex';
   document.getElementById('search-container').style.display = 'none';
   document.getElementById('code-preview-section').style.display = 'none';
+  const editorEmpty = document.getElementById('editor-empty');
+  if (editorEmpty) editorEmpty.style.display = 'flex';
   document.getElementById('results-section').style.display = 'none';
   document.getElementById('progress-section').style.display = 'none';
   document.getElementById('right-empty').style.display = 'flex';
@@ -185,7 +517,8 @@ function renderClassList(classes) {
   list.innerHTML = classes.map((cls) => `
     <li onclick="selectClass('${cls.name}')" id="class-${cls.name}"
         title="${cls.name} (${cls.lengthWithoutComments} chars)">
-      ${cls.name}
+      <span class="class-item-icon">⚡</span>
+      <span class="class-item-name">${escapeHtml(cls.name)}</span>
     </li>
   `).join('');
 }
@@ -215,11 +548,14 @@ async function selectClass(className) {
   const el = document.getElementById(`class-${className}`);
   if (el) el.classList.add('active');
 
-  // Show preview section
+  // Hide empty state, show preview section
+  const editorEmpty = document.getElementById('editor-empty');
+  if (editorEmpty) editorEmpty.style.display = 'none';
+
   const previewSection = document.getElementById('code-preview-section');
   previewSection.style.display = 'flex';
   document.getElementById('preview-class-name').textContent = className;
-  document.getElementById('code-preview').querySelector('code').textContent = 'Loading...';
+  document.getElementById('code-preview').querySelector('code').textContent = 'Loading source code...';
   document.getElementById('btn-generate').disabled = true;
   document.getElementById('btn-fls-check').disabled = true;
 
@@ -389,7 +725,7 @@ function renderFLSModalData(data) {
 
   // Default to 'blocked' tab if there are blocked fields, else 'all'
   const defTab = hasIssues ? 'blocked' : 'all';
-  const btns = document.querySelectorAll('.fls-filter-btn');
+  const btns = document.querySelectorAll('.fls-modal-dialog .fls-filter-btn');
   btns.forEach((b) => {
     b.classList.toggle('active', b.getAttribute('data-filter') === defTab);
   });
@@ -400,22 +736,19 @@ function renderFLSModalData(data) {
 
 function setFLSFilter(filter, btnEl) {
   currentFLSFilter = filter;
-  document.querySelectorAll('.fls-filter-btn').forEach((b) => b.classList.remove('active'));
+  document.querySelectorAll('.fls-modal-dialog .fls-filter-btn').forEach((b) => b.classList.remove('active'));
   if (btnEl) btnEl.classList.add('active');
   filterFLSModalTable();
 }
 
-function filterFLSModalTable() {
-  if (!currentFLSData) return;
-  const tbody = document.getElementById('fls-modal-table-body');
-  const search = (document.getElementById('fls-search-input')?.value || '').toLowerCase().trim();
-  const selectedObj = document.getElementById('fls-modal-object-select')?.value || 'all';
-
+// ─── Shared FLS Row Generator ─────────────────────────────
+function buildFLSRowsHTML(data, filter, search, selectedObj) {
+  if (!data) return '';
   const rows = [];
-  const objects = currentFLSData.objects || {};
+  const objects = data.objects || {};
 
   for (const [objName, objData] of Object.entries(objects)) {
-    if (selectedObj !== 'all' && selectedObj.toLowerCase() !== objName.toLowerCase()) {
+    if (selectedObj && selectedObj !== 'all' && selectedObj.toLowerCase() !== objName.toLowerCase()) {
       continue;
     }
 
@@ -428,7 +761,7 @@ function filterFLSModalTable() {
 
     for (const f of all) {
       // Filter by status tab
-      if (currentFLSFilter !== 'all' && f.status !== currentFLSFilter) {
+      if (filter && filter !== 'all' && f.status !== filter) {
         continue;
       }
 
@@ -443,17 +776,16 @@ function filterFLSModalTable() {
   }
 
   if (rows.length === 0) {
-    tbody.innerHTML = `
+    return `
       <tr>
         <td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted);">
           No fields found matching the current filter.
         </td>
       </tr>
     `;
-    return;
   }
 
-  tbody.innerHTML = rows.map((f) => {
+  return rows.map((f) => {
     const isBlocked = f.status === 'blocked';
     const isReadOnly = f.status === 'readonly';
     const statusClass = isBlocked ? 'fls-status-blocked' : isReadOnly ? 'fls-status-readonly' : 'fls-status-full';
@@ -478,6 +810,37 @@ function filterFLSModalTable() {
       </tr>
     `;
   }).join('');
+}
+
+function filterFLSModalTable() {
+  if (!currentFLSData) return;
+  const tbody = document.getElementById('fls-modal-table-body');
+  if (!tbody) return;
+  const search = (document.getElementById('fls-search-input')?.value || '').toLowerCase().trim();
+  const selectedObj = document.getElementById('fls-modal-object-select')?.value || 'all';
+  tbody.innerHTML = buildFLSRowsHTML(currentFLSData, currentFLSFilter, search, selectedObj);
+}
+
+// ─── Inline FLS Inspector Filtering ───────────────────────
+let currentFLSInlineFilter = 'all';
+
+function setFLSInlineFilter(filter, btnEl) {
+  currentFLSInlineFilter = filter;
+  const container = document.getElementById('fls-inline-filters');
+  if (container) {
+    container.querySelectorAll('.fls-filter-btn').forEach((b) => b.classList.remove('active'));
+  }
+  if (btnEl) btnEl.classList.add('active');
+  filterFLSInlineTable();
+}
+
+function filterFLSInlineTable() {
+  if (!currentFLSData) return;
+  const tbody = document.getElementById('fls-inline-table-body');
+  if (!tbody) return;
+  const search = (document.getElementById('fls-inline-search-input')?.value || '').toLowerCase().trim();
+  const selectedObj = document.getElementById('fls-inline-object-select')?.value || 'all';
+  tbody.innerHTML = buildFLSRowsHTML(currentFLSData, currentFLSInlineFilter, search, selectedObj);
 }
 
 function downloadFLSCSV() {
@@ -531,106 +894,124 @@ function renderFLSReport(data) {
   details.style.display = 'block';
 
   const s = data.summary || {};
-  const hasIssues = s.noAccess > 0;
+  const hasIssues = (s.noAccess || 0) > 0;
+  const defTab = hasIssues ? 'blocked' : 'all';
+  currentFLSInlineFilter = defTab;
 
-  // Update summary badge
-  if (badge) {
-    if (hasIssues) {
-      badge.className = 'fls-summary-badge fls-badge-danger';
-      badge.textContent = `⚠️ ${s.noAccess} field(s) blocked`;
-    } else if (s.readOnly > 0) {
-      badge.className = 'fls-summary-badge fls-badge-warn';
-      badge.textContent = `${s.fullAccess} full · ${s.readOnly} read-only`;
-    } else {
-      badge.className = 'fls-summary-badge fls-badge-ok';
-      badge.textContent = `✅ ${s.fullAccess} fields — all accessible`;
-    }
-  }
-
-  let html = '';
-
-  // Button to open the full interactive modal
-  html += '<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">';
-  html += '<button class="fls-btn-expand" onclick="openFLSModal()">🔍 Open Fullscreen FLS Inspector (' + (s.totalFields || 0) + ' Fields)</button>';
-  html += '<button class="btn btn-accent btn-small" onclick="downloadFLSCSV()">📥 Export CSV</button>';
-  html += '</div>';
-
-  // Warning banner
+  let badgeClass = 'fls-summary-badge fls-badge-ok';
+  let badgeText = `✅ ${s.fullAccess || 0} fields — all accessible`;
   if (hasIssues) {
-    html += '<div class="fls-warning-banner">';
-    html += '<div class="fls-warning-icon">⚠️</div>';
-    html += '<div class="fls-warning-text">';
-    html += '<strong>' + s.noAccess + ' field(s) are NOT accessible</strong> to the current user. ';
-    html += 'These fields require a <strong>Permission Set</strong> assignment. ';
-    html += 'Using them in test data will cause <code>FIELD_CUSTOM_VALIDATION_EXCEPTION</code> or <code>INSUFFICIENT_ACCESS</code> errors.';
-    html += '</div></div>';
+    badgeClass = 'fls-summary-badge fls-badge-danger';
+    badgeText = `⚠️ ${s.noAccess} field(s) blocked`;
+  } else if ((s.readOnly || 0) > 0) {
+    badgeClass = 'fls-summary-badge fls-badge-warn';
+    badgeText = `${s.fullAccess || 0} full · ${s.readOnly} read-only`;
   }
 
-  // Summary pills
-  html += '<div class="fls-summary-pills">';
-  html += '<span class="fls-pill fls-pill-blocked" onclick="openFLSModal()" style="cursor:pointer;" title="Click to view in inspector"><span class="fls-dot fls-dot-blocked"></span> 🔴 Blocked: <strong>' + (s.noAccess || 0) + '</strong></span>';
-  html += '<span class="fls-pill fls-pill-readonly" onclick="openFLSModal()" style="cursor:pointer;" title="Click to view in inspector"><span class="fls-dot fls-dot-readonly"></span> 🟡 Read-Only: <strong>' + (s.readOnly || 0) + '</strong></span>';
-  html += '<span class="fls-pill fls-pill-full" onclick="openFLSModal()" style="cursor:pointer;" title="Click to view in inspector"><span class="fls-dot fls-dot-full"></span> 🟢 Full Access: <strong>' + (s.fullAccess || 0) + '</strong></span>';
-  html += '<span class="fls-pill fls-pill-total">Total: <strong>' + (s.totalFields || 0) + '</strong> fields across <strong>' + (s.totalObjects || 0) + '</strong> objects</span>';
-  html += '</div>';
-
-  // Per-object FLS tables
-  const objects = data.objects || {};
-  for (const [objName, objData] of Object.entries(objects)) {
-    html += buildFLSObjectTable(objName, objData);
+  // Update summary badge in panel header
+  if (badge) {
+    badge.className = badgeClass;
+    badge.textContent = badgeText;
   }
+
+  const objNames = Object.keys(data.objects || {});
+
+  let html = `
+    <div class="fls-inline-container">
+      <!-- Top Action & Meta Bar -->
+      <div class="fls-actions-bar">
+        <div class="fls-meta-group">
+          <span class="badge" style="font-size:11px;">${escapeHtml(data.className || selectedClass || 'Apex Class')}</span>
+          <span class="${badgeClass}">${badgeText}</span>
+        </div>
+        <div class="fls-actions-right">
+          <button class="btn btn-secondary btn-small fls-btn-expand" onclick="openFLSModal()" title="Open Fullscreen FLS Inspector Modal">
+            🔍 Fullscreen Modal
+          </button>
+          <button class="btn btn-accent btn-small" onclick="downloadFLSCSV()" title="Export all fields to CSV">
+            📥 Export CSV
+          </button>
+        </div>
+      </div>
+
+      <!-- Summary Stats Grid -->
+      <div class="audit-summary-grid" style="margin-bottom:0;">
+        <div class="audit-card">
+          <div class="audit-card-val" style="color:var(--error);">${s.noAccess || 0}</div>
+          <div class="audit-card-lbl">🔴 No Access (Blocked)</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-card-val" style="color:var(--warning);">${s.readOnly || 0}</div>
+          <div class="audit-card-lbl">🟡 Read-Only Fields</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-card-val" style="color:var(--success);">${s.fullAccess || 0}</div>
+          <div class="audit-card-lbl">🟢 Full Access Fields</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-card-val" style="color:var(--accent-bright);">${s.totalFields || 0}</div>
+          <div class="audit-card-lbl">Total Detected Fields</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-card-val" style="color:#38bdf8;">${s.totalObjects || 0}</div>
+          <div class="audit-card-lbl">SObjects Touched</div>
+        </div>
+      </div>
+
+      <!-- Warning Banner -->
+      ${hasIssues ? `
+        <div class="fls-warning-banner">
+          <div class="fls-warning-icon">⚠️</div>
+          <div class="fls-warning-text">
+            <strong>${s.noAccess} field(s) are NOT accessible</strong> to your Salesforce user.
+            These fields require a <strong>Permission Set</strong> with Read and Edit permissions.
+            If test data tries to set or query these fields, Salesforce will throw <code>FIELD_CUSTOM_VALIDATION_EXCEPTION</code> or <code>INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY</code> errors.
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Filter & Search Toolbar -->
+      <div class="fls-toolbar" style="margin-bottom:0;">
+        <div class="fls-search-box">
+          <input type="text" id="fls-inline-search-input" placeholder="🔍 Search field name, label, object, or reason..." oninput="filterFLSInlineTable()">
+        </div>
+        <div id="fls-inline-filters" class="fls-filter-group">
+          <button class="fls-filter-btn ${defTab === 'all' ? 'active' : ''}" data-filter="all" onclick="setFLSInlineFilter('all', this)">All Fields (${s.totalFields || 0})</button>
+          <button class="fls-filter-btn fls-btn-danger ${defTab === 'blocked' ? 'active' : ''}" data-filter="blocked" onclick="setFLSInlineFilter('blocked', this)">🔴 Blocked (${s.noAccess || 0})</button>
+          <button class="fls-filter-btn fls-btn-warn ${defTab === 'readonly' ? 'active' : ''}" data-filter="readonly" onclick="setFLSInlineFilter('readonly', this)">🟡 Read-Only (${s.readOnly || 0})</button>
+          <button class="fls-filter-btn fls-btn-ok ${defTab === 'full' ? 'active' : ''}" data-filter="full" onclick="setFLSInlineFilter('full', this)">🟢 Full Access (${s.fullAccess || 0})</button>
+        </div>
+        <select id="fls-inline-object-select" class="fls-obj-select" onchange="filterFLSInlineTable()">
+          <option value="all">📦 All SObjects (${objNames.length})</option>
+          ${objNames.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('')}
+        </select>
+      </div>
+
+      <!-- FLS Master Table -->
+      <div class="audit-table-wrapper fls-table-wrapper">
+        <table class="detail-table fls-master-table">
+          <thead>
+            <tr>
+              <th>SObject</th>
+              <th>Field API Name</th>
+              <th>Field Label</th>
+              <th>Data Type</th>
+              <th style="text-align:center;">Read</th>
+              <th style="text-align:center;">Create</th>
+              <th style="text-align:center;">Update</th>
+              <th>FLS Status</th>
+              <th>Reason / Action Required</th>
+            </tr>
+          </thead>
+          <tbody id="fls-inline-table-body">
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 
   details.innerHTML = html;
-}
-
-function buildFLSObjectTable(objName, objData) {
-  const fls = objData.flsSummary || { fullAccess: [], readOnly: [], noAccess: [] };
-  const allFields = [...(fls.noAccess || []), ...(fls.readOnly || []), ...(fls.fullAccess || [])];
-  if (allFields.length === 0) return '';
-
-  const noAccessCount = (fls.noAccess || []).length;
-  const readOnlyCount = (fls.readOnly || []).length;
-  const objBadge = noAccessCount > 0
-    ? '<span class="fls-obj-badge fls-obj-danger">' + noAccessCount + ' blocked</span>'
-    : readOnlyCount > 0
-      ? '<span class="fls-obj-badge fls-obj-warn">' + readOnlyCount + ' read-only</span>'
-      : '<span class="fls-obj-badge fls-obj-ok">✅ All OK</span>';
-
-  let html = '<div class="fls-object-card">';
-  html += '<div class="fls-object-header">';
-  html += '<span class="fls-object-name">📦 ' + escapeHtml(objName) + '</span>';
-  html += '<div style="display:flex;gap:6px;align-items:center;">';
-  html += objBadge;
-  html += '<button class="btn btn-small" onclick="openFLSModal()" style="padding:2px 6px;font-size:10px;">🔍 View All</button>';
-  html += '</div>';
-  html += '</div>';
-  html += '<table class="detail-table fls-field-table"><thead><tr>';
-  html += '<th>Field</th><th>Label</th><th>Type</th><th>Accessible</th><th>Createable</th><th>Updateable</th><th>FLS Status</th>';
-  html += '</tr></thead><tbody>';
-
-  for (const f of allFields) {
-    const statusClass = !f.accessible ? 'fls-status-blocked' : !f.createable ? 'fls-status-readonly' : 'fls-status-full';
-    const statusIcon = !f.accessible ? '🔴' : !f.createable ? '🟡' : '🟢';
-    const statusLabel = !f.accessible ? 'No Access' : !f.createable ? 'Read Only' : 'Full Access';
-    const boolIcon = function(v) { return v ? '✅' : '❌'; };
-    const rowClass = !f.accessible ? 'fls-row-blocked' : !f.createable ? 'fls-row-readonly' : '';
-
-    html += '<tr class="' + rowClass + '">';
-    html += '<td class="mono">' + escapeHtml(f.field) + '</td>';
-    html += '<td>' + escapeHtml(f.label || '') + '</td>';
-    html += '<td><span class="fls-type-tag">' + escapeHtml(f.type || '') + '</span></td>';
-    html += '<td class="fls-bool-cell">' + boolIcon(f.accessible) + '</td>';
-    html += '<td class="fls-bool-cell">' + boolIcon(f.createable) + '</td>';
-    html += '<td class="fls-bool-cell">' + boolIcon(f.updateable) + '</td>';
-    html += '<td><span class="fls-status-tag ' + statusClass + '">' + statusIcon + ' ' + statusLabel + '</span>';
-    if (f.reason && !f.accessible) {
-      html += '<div class="fls-reason">' + escapeHtml(f.reason) + '</div>';
-    }
-    html += '</td></tr>';
-  }
-
-  html += '</tbody></table></div>';
-  return html;
+  filterFLSInlineTable();
 }
 
 // ─── Run Harness ──────────────────────────────────────────
@@ -658,15 +1039,16 @@ async function runHarness() {
   timerInterval = setInterval(updateTimer, 1000);
 
   try {
+    const chosenModel = getSelectedModel();
     const res = await fetch('/api/harness/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ className: selectedClass }),
+      body: JSON.stringify({ className: selectedClass, model: chosenModel }),
     });
     const data = await res.json();
     currentJobId = data.jobId;
 
-    renderActivityCard('fetch', `Harness initialized for ${selectedClass}...`, {});
+    renderActivityCard('fetch', `Harness initialized for ${selectedClass} [${chosenModel}]...`, {});
 
     // Start polling for progress
     pollInterval = setInterval(() => pollProgress(currentJobId), 1500);
@@ -934,18 +1316,9 @@ function buildFixDetail(data) {
 function buildGenerateDetail(data) {
   var parts = [];
   if (data.testClassName) parts.push('Class: <span class="mono">' + escapeHtml(data.testClassName) + '</span>');
-<<<<<<< Updated upstream
-  if (data.tokensUsed) parts.push('Tokens: <strong>' + data.tokensUsed.input.toLocaleString() + '</strong> in / <strong>' + data.tokensUsed.output.toLocaleString() + '</strong> out');
-  if (data.charsUsed && (data.charsUsed.input || data.charsUsed.output)) {
-    parts.push('Chars: <strong>' + (data.charsUsed.input || 0).toLocaleString() + '</strong> in / <strong>' + (data.charsUsed.output || 0).toLocaleString() + '</strong> out');
-  }
-  if (data.estimatedCost && data.estimatedCost.totalCost > 0) {
-    parts.push('Cost: <strong>$' + data.estimatedCost.totalCost.toFixed(4) + '</strong>');
-  }
-=======
   
   if (data.characterMetrics?.output) {
-    parts.push('Generated: <strong>' + (data.characterMetrics.output.withBlanks || 0).toLocaleString() + ' chars</strong> (w/ blanks)');
+    parts.push('Generated: <strong>' + (data.characterMetrics.output.withBlanks || 0).toLocaleString() + ' chars</strong>');
   }
   
   if (data.tokensUsed) {
@@ -961,7 +1334,6 @@ function buildGenerateDetail(data) {
     parts.push('Total Spent: <strong style="color:var(--accent-bright);">' + escapeHtml(data.totalCumulativeCost) + '</strong>');
   }
   
->>>>>>> Stashed changes
   return parts.length > 0 ? '<div class="detail-section">' + parts.join(' &nbsp;•&nbsp; ') + '</div>' : '';
 }
 
@@ -1087,10 +1459,6 @@ function renderResults(result) {
     </div>
   `;
 
-<<<<<<< Updated upstream
-  // ─── Usage & Cost Summary ─────────────────────────────
-  renderUsageSummary(result);
-=======
   // AI Usage & Cost Breakdown Dashboard
   const aiSection = document.getElementById('ai-usage-section');
   if (aiSection && (ai.totalTokens || result.totalTokensUsed)) {
@@ -1223,7 +1591,6 @@ function renderResults(result) {
       `;
     }
   }
->>>>>>> Stashed changes
 
   // Individual test results
   const testResults = document.getElementById('test-results');
@@ -1293,7 +1660,14 @@ function copyTestCode() {
 
 function toggleSection(id) {
   const el = document.getElementById(id);
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  if (!el) return;
+  const isHidden = el.style.display === 'none';
+  el.style.display = isHidden ? 'block' : 'none';
+  const header = el.previousElementSibling;
+  if (header) {
+    const chevron = header.querySelector('.chevron');
+    if (chevron) chevron.textContent = isHidden ? '▼' : '▶';
+  }
 }
 
 function showToast(message, type = 'info') {
@@ -1304,86 +1678,6 @@ function showToast(message, type = 'info') {
   setTimeout(() => toast.remove(), 3000);
 }
 
-<<<<<<< Updated upstream
-// ─── Usage & Cost Summary Renderer ──────────────────────
-function renderUsageSummary(result) {
-  // Remove existing usage section if re-rendering
-  const existing = document.getElementById('usage-summary-section');
-  if (existing) existing.remove();
-
-  const tokens = result.totalTokensUsed || {};
-  const chars = result.totalCharsUsed || {};
-  const cost = result.estimatedCost || {};
-  const modelName = cost.model || 'Unknown';
-
-  const totalTokens = (tokens.input || 0) + (tokens.output || 0);
-  const totalChars = (chars.input || 0) + (chars.output || 0);
-  const totalCost = cost.totalCost || 0;
-
-  // Don't render if there's no usage data at all
-  if (totalTokens === 0 && totalChars === 0) return;
-
-  const usageSection = document.createElement('div');
-  usageSection.id = 'usage-summary-section';
-  usageSection.className = 'usage-summary-section';
-
-  usageSection.innerHTML = `
-    <div class="usage-header">
-      <h3>💰 API Usage & Cost</h3>
-      <span class="usage-model-badge">${escapeHtml(modelName)}</span>
-    </div>
-    <div class="usage-grid">
-      <div class="usage-card usage-card-tokens">
-        <div class="usage-card-icon">🔤</div>
-        <div class="usage-card-content">
-          <div class="usage-card-value">${totalTokens.toLocaleString()}</div>
-          <div class="usage-card-label">Total Tokens</div>
-          <div class="usage-card-breakdown">
-            <span class="usage-in">↗ ${(tokens.input || 0).toLocaleString()} in</span>
-            <span class="usage-out">↙ ${(tokens.output || 0).toLocaleString()} out</span>
-          </div>
-        </div>
-      </div>
-      <div class="usage-card usage-card-chars">
-        <div class="usage-card-icon">📝</div>
-        <div class="usage-card-content">
-          <div class="usage-card-value">${totalChars.toLocaleString()}</div>
-          <div class="usage-card-label">Total Characters</div>
-          <div class="usage-card-breakdown">
-            <span class="usage-in">↗ ${(chars.input || 0).toLocaleString()} in</span>
-            <span class="usage-out">↙ ${(chars.output || 0).toLocaleString()} out</span>
-          </div>
-        </div>
-      </div>
-      <div class="usage-card usage-card-cost">
-        <div class="usage-card-icon">💵</div>
-        <div class="usage-card-content">
-          <div class="usage-card-value">${formatCost(totalCost)}</div>
-          <div class="usage-card-label">Estimated Cost</div>
-          <div class="usage-card-breakdown">
-            <span class="usage-in">↗ $${(cost.inputCost || 0).toFixed(4)} in</span>
-            <span class="usage-out">↙ $${(cost.outputCost || 0).toFixed(4)} out</span>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="usage-footer">
-      <span>Pricing based on <strong>${escapeHtml(modelName)}</strong> rates • ${result.attempts || 1} API call(s)</span>
-    </div>
-  `;
-
-  // Insert after the results-summary div
-  const summaryEl = document.getElementById('results-summary');
-  summaryEl.parentNode.insertBefore(usageSection, summaryEl.nextSibling);
-}
-
-function formatCost(dollars) {
-  if (dollars === 0) return '$0.00';
-  if (dollars < 0.01) return '$' + dollars.toFixed(4);
-  if (dollars < 1) return '$' + dollars.toFixed(3);
-  return '$' + dollars.toFixed(2);
-}
-=======
 // ─── Audit History & Monitoring ───────────────────────────
 async function loadAuditCount() {
   try {
@@ -1528,4 +1822,3 @@ async function clearAuditLogs() {
   }
 }
 
->>>>>>> Stashed changes
